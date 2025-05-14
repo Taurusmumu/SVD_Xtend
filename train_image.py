@@ -60,11 +60,60 @@ check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
+
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
     """Draws samples from an lognormal distribution."""
     u = torch.rand(shape, dtype=dtype, device=device) * (1 - 2e-7) + 1e-7
     return torch.distributions.Normal(loc, scale).icdf(u).exp()
+
+
+class DummyDatasetImage(Dataset):
+    def __init__(self, base_folder: str, num_samples=18256, width=256, height=256):
+        """
+        Args:
+            num_samples (int): Number of samples in the dataset.
+            channels (int): Number of channels, default is 3 for RGB.
+        """
+        self.num_samples = num_samples
+        # Define the path to the folder containing video frames
+        self.base_path = os.listdir(base_folder)
+        self.channels = 3
+        self.width = width
+        self.height = height
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        """
+        # Randomly select a folder (representing a video) from the base folder
+        chosen_img = self.base_path[idx]
+        frame_path = os.path.join(self.base_folder, chosen_img)
+
+        with Image.open(frame_path) as img:
+            # Resize the image and convert it to a tensor
+            img_resized = img.resize((self.width, self.height))
+            img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+            # Normalize the image by scaling pixel values to [-1, 1]
+            img_normalized = img_tensor / 127.5 - 1
+
+            # Rearrange channels if necessary
+            if self.channels == 3:
+                img_normalized = img_normalized.permute(
+                    2, 0, 1)  # For RGB images
+            elif self.channels == 1:
+                img_normalized = img_normalized.mean(
+                    dim=2, keepdim=True)  # For grayscale images
+
+        return {'pixel_values': img_normalized}
 
 
 class DummyDataset(Dataset):
@@ -134,6 +183,7 @@ class DummyDataset(Dataset):
 
                 pixel_values[i] = img_normalized
         return {'pixel_values': pixel_values}
+
 
 # resizing utils
 # TODO: clean up later
@@ -222,7 +272,7 @@ def _gaussian(window_size: int, sigma):
     batch_size = sigma.shape[0]
 
     x = (torch.arange(window_size, device=sigma.device,
-         dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
+                      dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
 
     if window_size % 2 == 0:
         x = x + 0.5
@@ -352,7 +402,7 @@ def parse_args():
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
+        "--seed", type=int, default=888, help="A seed for reproducible training."
     )
     parser.add_argument(
         "--per_gpu_batch_size",
@@ -360,7 +410,7 @@ def parse_args():
         default=1,
         help="Batch size (per device) for the training dataloader.",
     )
-    parser.add_argument("--num_train_epochs", type=int, default=100)
+    parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -673,7 +723,6 @@ def main():
     image_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
 
-
     # Create EMA for the unet.
     if args.use_ema:
         ema_unet = EMAModel(unet.parameters(
@@ -739,8 +788,8 @@ def main():
 
     if args.scale_lr:
         args.learning_rate = (
-            args.learning_rate * args.gradient_accumulation_steps *
-            args.per_gpu_batch_size * accelerator.num_processes
+                args.learning_rate * args.gradient_accumulation_steps *
+                args.per_gpu_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -819,7 +868,7 @@ def main():
 
     if args.use_ema:
         ema_unet.to(accelerator.device)
-        
+
     # attribute handling for models using DDP
     if isinstance(unet, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
         unet = unet.module
@@ -840,7 +889,7 @@ def main():
 
     # Train!
     total_batch_size = args.per_gpu_batch_size * \
-        accelerator.num_processes * args.gradient_accumulation_steps
+                       accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -877,16 +926,16 @@ def main():
         return image_embeddings
 
     def _get_add_time_ids(
-        fps,
-        motion_bucket_id,
-        noise_aug_strength,
-        dtype,
-        batch_size,
+            fps,
+            motion_bucket_id,
+            noise_aug_strength,
+            dtype,
+            batch_size,
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
         passed_add_embed_dim = unet.config.addition_time_embed_dim * \
-            len(add_time_ids)
+                               len(add_time_ids)
         expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
@@ -922,7 +971,7 @@ def main():
             resume_global_step = global_step * args.gradient_accumulation_steps
             first_epoch = global_step // num_update_steps_per_epoch
             resume_step = resume_global_step % (
-                num_update_steps_per_epoch * args.gradient_accumulation_steps)
+                    num_update_steps_per_epoch * args.gradient_accumulation_steps)
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, args.max_train_steps),
@@ -952,8 +1001,8 @@ def main():
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
 
-                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
+                cond_sigmas = rand_log_normal(shape=[bsz, ], loc=-3.0, scale=0.5).to(latents)
+                noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
@@ -962,7 +1011,7 @@ def main():
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                sigmas = rand_log_normal(shape=[bsz, ], loc=0.7, scale=1.6).to(latents.device)
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
@@ -970,7 +1019,7 @@ def main():
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                inp_noisy_latents = noisy_latents / ((sigmas ** 2 + 1) ** 0.5)
 
                 # Get the text embedding for conditioning.
                 encoder_hidden_states = encode_image(
@@ -980,9 +1029,9 @@ def main():
                 # However, I am unable to fully align with the calculation method of the motion score,
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
                 added_time_ids = _get_add_time_ids(
-                    7, # fixed
-                    127, # motion_bucket_id = 127, fixed
-                    noise_aug_strength, # noise_aug_strength == cond_sigmas
+                    7,  # fixed
+                    127,  # motion_bucket_id = 127, fixed
+                    noise_aug_strength,  # noise_aug_strength == cond_sigmas
                     encoder_hidden_states.dtype,
                     bsz,
                 )
@@ -1003,9 +1052,9 @@ def main():
                     # Sample masks for the original images.
                     image_mask_dtype = conditional_latents.dtype
                     image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                            (random_p >= args.conditioning_dropout_prob).to(
+                                image_mask_dtype)
+                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
                     image_mask = image_mask.reshape(bsz, 1, 1, 1)
                     # Final image conditioning.
@@ -1023,15 +1072,15 @@ def main():
                     inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
-                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                c_skip = 1 / (sigmas**2 + 1)
+                c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)
+                c_skip = 1 / (sigmas ** 2 + 1)
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+                weighing = (1 + sigmas ** 2) * (sigmas ** -2.0)
 
                 # MSE loss
                 loss = torch.mean(
                     (weighing.float() * (denoised_latents.float() -
-                     target.float()) ** 2).reshape(target.shape[0], -1),
+                                         target.float()) ** 2).reshape(target.shape[0], -1),
                     dim=1,
                 )
                 loss = loss.mean()
@@ -1092,8 +1141,8 @@ def main():
                         logger.info(f"Saved state to {save_path}")
                     # sample images!
                     if (
-                        (global_step % args.validation_steps == 0)
-                        or (global_step == 1)
+                            (global_step % args.validation_steps == 0)
+                            or (global_step == 1)
                     ):
                         logger.info(
                             f"Running validation... \n Generating {args.num_validation_images} videos."
@@ -1124,7 +1173,7 @@ def main():
                             os.makedirs(val_save_dir)
 
                         with torch.autocast(
-                            str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
+                                str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
