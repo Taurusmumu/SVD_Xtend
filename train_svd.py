@@ -24,7 +24,8 @@ import cv2
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
-
+from dataloader import AMCDataset
+os.environ["CUDA_VISIBLE_DEVICES"] = '1,3'
 import accelerate
 import numpy as np
 import PIL
@@ -297,7 +298,8 @@ def parse_args():
     )
     parser.add_argument(
         "--base_folder",
-        default="/ssd2/AMC_zstack_2_patches/pngs_mid/24S%20048630;E;10;;FA0824;1_241226_161645/z00",
+        # default='/ssd2/AMC_zstack_2_patches/pngs_mid/24S 059505;E;5;;FA0824;1_241226_011806/z00',
+        default='/ssd2/AMC_zstack_2_patches/pngs_mid/',
         required=False,
         type=str,
     )
@@ -318,7 +320,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=25,
+        default=15,
     )
     parser.add_argument(
         "--width",
@@ -333,13 +335,13 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=1,
+        default=4,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
         "--validation_steps",
         type=int,
-        default=500,
+        default=5000,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the text/image prompt"
             " multiple times: `args.num_validation_images`."
@@ -348,19 +350,19 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs",
+        default='/ssd2/AMC_zstack_2_patches/output0602/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
+        "--seed", type=int, default=42, help="A seed for reproducible training."
     )
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=1,
+        default=4,
         help="Batch size (per device) for the training dataloader.",
     )
-    parser.add_argument("--num_train_epochs", type=int, default=100)
+    parser.add_argument("--num_train_epochs", type=int, default=20)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -381,7 +383,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-4,
+        default=1e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -440,7 +442,7 @@ def parse_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=8,
+        default=0,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
@@ -524,7 +526,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=500,
+        default=5000,
         help=(
             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
             " training using `--resume_from_checkpoint`."
@@ -533,13 +535,13 @@ def parse_args():
     parser.add_argument(
         "--checkpoints_total_limit",
         type=int,
-        default=20,
+        default=50,
         help=("Max number of checkpoints to store."),
     )
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default=None,
+        default='checkpoint-85000', # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -611,6 +613,9 @@ def main():
             raise ImportError(
                 "Make sure to install wandb if you want to use it for logging during training.")
         import wandb
+        wandb.login(
+            key="928c7cd0eba71d0831bcf8c85a2e47b0086340e6"
+        )
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -787,8 +792,8 @@ def main():
 
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
-
-    train_dataset = DummyDataset(args.base_folder, width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = AMCDataset(data_dir=args.base_folder, split="train", img_size=args.width, sample_frames=args.num_frames)
+    # train_dataset = DummyDataset(args.base_folder, width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -948,6 +953,11 @@ def main():
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
+                pixel_values_flipped = batch["pixel_values_flipped"].to(weight_dtype).to(
+                    accelerator.device, non_blocking=True
+                )
+                latents_flipped = tensor_to_vae_latent(pixel_values_flipped, vae)
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
@@ -1028,12 +1038,16 @@ def main():
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
                 weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
 
+                # torch.
+
                 # MSE loss
-                loss = torch.mean(
-                    (weighing.float() * (denoised_latents.float() -
-                     target.float()) ** 2).reshape(target.shape[0], -1),
+                loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2).reshape(target.shape[0], -1),
                     dim=1,
-                )
+                )  # [B, 3, 4, 32, 32] -> [B]
+                loss_fliped = torch.mean((weighing.float() * (denoised_latents.float() - latents_flipped.float()) ** 2).reshape(latents_flipped.shape[0], -1),
+                    dim=1,
+                )  # [B, 3, 4, 32, 32] -> [B]
+                loss = torch.minimum(loss, loss_fliped)
                 loss = loss.mean()
 
                 # Gather the losses across all processes for logging (if we use distributed training).
@@ -1126,10 +1140,11 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
+                            val_arr = ['patch_47_6181_4930.png', 'patch_6570_17725_29207.png', 'patch_6507_20844_15426.png', 'patch_956_7003_23258.png']
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image(val_arr[val_img_idx]).resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,

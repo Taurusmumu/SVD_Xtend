@@ -53,7 +53,7 @@ if __name__ == "__main__":
     # layers = ["z00", "z03", "z06", "z09", "z12", "z15", "z18"]
     layers = ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18"]
     threshold = 0.5
-    consecutive_layers_required = 9
+    consecutive_layers_required = 15
     blur_data_df = pd.read_csv('./blur_data.csv')
 
     file = open(image_info_path, "r")
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     print(blur_data_df, min_indices)
 
     blur_data_df["min_indices"] = min_indices
-    blur_data_df.to_csv("./blur_data1.csv", index=False)
+    blur_data_df.to_csv("./blur_data2.csv", index=False)
 
 
     # blur_scores = blur_scores.reshape(-1, len(layers))
