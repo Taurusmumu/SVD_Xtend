@@ -175,12 +175,13 @@ class FID(Metric):
     def __str__(self) -> str:
         return 'FID'
 
-    def compute(self):
+    def compute(self, num_samples=None):
         self.logger.info(f"Start to calculate metric {self}.")
         value = self.metric_fn([str(self.input_dir), str(self.label_dir)],
                                batch_size=1,
                                device=self.device,
-                               dims=2048)
+                               dims=2048,
+                               num_samples=num_samples)
 
         self.logger.info(f"Result: {value}")
         return value

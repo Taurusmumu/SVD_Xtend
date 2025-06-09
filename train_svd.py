@@ -25,7 +25,7 @@ import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 from dataloader import AMCDataset
-os.environ["CUDA_VISIBLE_DEVICES"] = '1,3'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0, 1, 2, 3'
 import accelerate
 import numpy as np
 import PIL
@@ -350,7 +350,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output0602/',
+        default='/ssd2/AMC_zstack_2_patches/output0604/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -359,7 +359,7 @@ def parse_args():
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=4,
+        default=2,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument("--num_train_epochs", type=int, default=20)
@@ -541,7 +541,7 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default='checkpoint-85000', # checkpoint-40000
+        default='checkpoint-45000', # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -949,14 +949,19 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
+                middle_idx = (args.num_frames - 1 ) // 2
+                conditional_pixel_values = pixel_values[:, middle_idx:middle_idx+1, :, :, :]
+                middle_frames = batch["middle_frame"].to(weight_dtype).to(
+                    accelerator.device, non_blocking=True
+                )
+                # middle_frames = middle_frames[:, None, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
-                pixel_values_flipped = batch["pixel_values_flipped"].to(weight_dtype).to(
-                    accelerator.device, non_blocking=True
-                )
-                latents_flipped = tensor_to_vae_latent(pixel_values_flipped, vae)
+                # pixel_values_flipped = batch["pixel_values_flipped"].to(weight_dtype).to(
+                #     accelerator.device, non_blocking=True
+                # )
+                # latents_flipped = tensor_to_vae_latent(pixel_values_flipped, vae)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -983,8 +988,10 @@ def main():
                 inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
                 # Get the text embedding for conditioning.
+                # encoder_hidden_states = encode_image(
+                #     pixel_values[:, 0, :, :, :].float())
                 encoder_hidden_states = encode_image(
-                    pixel_values[:, 0, :, :, :].float())
+                    middle_frames.float())
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
@@ -1044,10 +1051,10 @@ def main():
                 loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2).reshape(target.shape[0], -1),
                     dim=1,
                 )  # [B, 3, 4, 32, 32] -> [B]
-                loss_fliped = torch.mean((weighing.float() * (denoised_latents.float() - latents_flipped.float()) ** 2).reshape(latents_flipped.shape[0], -1),
-                    dim=1,
-                )  # [B, 3, 4, 32, 32] -> [B]
-                loss = torch.minimum(loss, loss_fliped)
+                # loss_fliped = torch.mean((weighing.float() * (denoised_latents.float() - latents_flipped.float()) ** 2).reshape(latents_flipped.shape[0], -1),
+                #     dim=1,
+                # )  # [B, 3, 4, 32, 32] -> [B]
+                # loss = torch.minimum(loss, loss_fliped)
                 loss = loss.mean()
 
                 # Gather the losses across all processes for logging (if we use distributed training).
@@ -1144,7 +1151,7 @@ def main():
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image(val_arr[val_img_idx]).resize((args.width, args.height)),
+                                    load_image(val_arr[val_img_idx]),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,

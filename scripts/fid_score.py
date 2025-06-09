@@ -40,6 +40,7 @@ import torch
 import torchvision.transforms as TF
 from PIL import Image
 from scipy import linalg
+import random
 from torch.nn.functional import adaptive_avg_pool2d
 import glob
 
@@ -233,21 +234,26 @@ def calculate_activation_statistics(files, model, batch_size=50, dims=2048,
 
 
 def compute_statistics_of_path(path, model, batch_size, dims, device,
-                               num_workers=1):
+                               num_workers=1, num_samples=None):
     if path.endswith('.npz'):
         with np.load(path) as f:
             m, s = f['mu'][:], f['sigma'][:]
     else:
         path = pathlib.Path(path)
-        files = sorted([file for ext in IMAGE_EXTENSIONS
-                       for file in path.glob('**/*.{}'.format(ext))])
+        files = [file for ext in IMAGE_EXTENSIONS for file in path.glob('**/*.{}'.format(ext))]
+        random.shuffle(files)
+        if num_samples is not None:
+            files = files[:num_samples]
+        files = sorted(files)
+        # files = sorted([file for ext in IMAGE_EXTENSIONS
+        #                for file in path.glob('**/*.{}'.format(ext))])
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers)
 
     return m, s
 
 
-def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1):
+def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1, num_samples=None):
     """Calculates the FID of two paths"""
     for p in paths:
         if not os.path.exists(p):
@@ -258,9 +264,9 @@ def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1):
     model = InceptionV3([block_idx]).to(device)
 
     m1, s1 = compute_statistics_of_path(paths[0], model, batch_size,
-                                        dims, device, num_workers)
+                                        dims, device, num_workers, num_samples)
     m2, s2 = compute_statistics_of_path(paths[1], model, batch_size,
-                                        dims, device, num_workers)
+                                        dims, device, num_workers, num_samples)
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 
     return fid_value
