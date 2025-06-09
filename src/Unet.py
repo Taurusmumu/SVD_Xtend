@@ -19,6 +19,7 @@ class UNetSpatioTemporalConditionModelWithEmbedder(UNetSpatioTemporalConditionMo
             encoder_hidden_states: torch.Tensor,
             added_time_ids: torch.Tensor,
             return_dict: bool = True,
+            alpha: torch.FloatTensor = None,
     ) -> Union[UNetSpatioTemporalConditionOutput, Tuple]:
         r"""
         The [`UNetSpatioTemporalConditionModel`] forward method.
@@ -41,7 +42,10 @@ class UNetSpatioTemporalConditionModelWithEmbedder(UNetSpatioTemporalConditionMo
                 a `tuple` is returned where the first element is the sample tensor.
         """
         # 0. Embedder 1025 -> 1024
-        encoder_hidden_states = self.embedder(encoder_hidden_states)
+        if alpha is not None:
+            assert len(encoder_hidden_states.shape) == 2
+            encoder_hidden_states = torch.cat([encoder_hidden_states, alpha], dim=1)  # [B, 1025]
+            encoder_hidden_states = self.embedder(encoder_hidden_states)
 
         # 1. time
         timesteps = timestep

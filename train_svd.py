@@ -973,6 +973,10 @@ def main():
                     accelerator.device, non_blocking=True
                 )
                 # middle_frames = middle_frames[:, None, :]
+                if args.embeddder:
+                    alpha = batch["alpha"].to(weight_dtype).to(
+                        accelerator.device, non_blocking=True
+                    )
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
@@ -1008,8 +1012,7 @@ def main():
                 # Get the text embedding for conditioning.
                 # encoder_hidden_states = encode_image(
                 #     pixel_values[:, 0, :, :, :].float())
-                encoder_hidden_states = encode_image(
-                    middle_frames.float())
+                encoder_hidden_states = encode_image(middle_frames.float())
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
@@ -1054,8 +1057,11 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+
+                if args.embeddder:
+                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids, alpha=alpha).sample
+                else:
+                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)

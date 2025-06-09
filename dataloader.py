@@ -34,6 +34,7 @@ class AMCDataset(Dataset):
             data_dir="/ssd2/AMC_zstack_2_patches/pngs_mid",
             start_layer_path="/home/compu/jiamu/SVD_Xtend/image_process/blur_data2.csv",
             split_file="/ssd2/AMC_zstack_2_patches/base_sudo_anno.txt",
+            num_layers=19,
     ):
         self.channels = channels
         self.sample_frames = sample_frames
@@ -57,6 +58,7 @@ class AMCDataset(Dataset):
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ])
+        self.num_layers = num_layers
 
         split_dict = {}
         with open(split_file, "r") as rf:
@@ -112,7 +114,7 @@ class AMCDataset(Dataset):
                         patch_imgs.append(patch_path)
                     if len(patch_imgs) == sample_frames:
                         break
-                self.samples.append(patch_imgs)
+                self.samples.append((patch_imgs, start_layer))
 
         print("{} samples loaded.".format(len(self.samples)))
 
@@ -152,7 +154,8 @@ class AMCDataset(Dataset):
 
 
     def __getitem__(self, index):
-        selected_frames = self.samples[index]
+        selected_frames, start_layer = self.samples[index]
+        alpha = start_layer / self.num_layers
         # p = random.choice(['A', 'B', 'C'])
         # if p == 'A':
         #     selected_frames = [frames[0], frames[2], frames[4]]
@@ -180,7 +183,7 @@ class AMCDataset(Dataset):
         middle_frame = Image.open(middle_frame)
         middle_frame = self.transform_middle(middle_frame)
 
-        return {'pixel_values': pixel_values, 'middle_frame': middle_frame}
+        return {'pixel_values': pixel_values, 'middle_frame': middle_frame, 'alpha': alpha}
 
 
     def __len__(self):
