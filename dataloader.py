@@ -30,11 +30,12 @@ def export_to_gif(frames, output_gif_path, fps):
 
 class AMCDataset(Dataset):
     def __init__(
-            self, split, img_size=256, sample_frames=15,channels=3,
+            self, split, img_size=256, sample_frames=14,channels=3,blur_threshold=0.4,
             data_dir="/ssd2/AMC_zstack_2_patches/pngs_mid",
-            start_layer_path="/home/compu/jiamu/SVD_Xtend/image_process/blur_data2.csv",
+            start_layer_path="/home/compu/jiamu/SVD_Xtend/image_process/blur_data3.csv",
             split_file="/ssd2/AMC_zstack_2_patches/base_sudo_anno.txt",
     ):
+        self.blur_threshold = blur_threshold
         self.channels = channels
         self.sample_frames = sample_frames
         self.img_size = img_size
@@ -69,17 +70,21 @@ class AMCDataset(Dataset):
 
         print("Loading layers info from \"{}\".".format(start_layer_path))
         start_layer_dict = {}
+        blur_degree_dict = {}
         with open(start_layer_path, "r") as rf:
             rf.readline()
             for line in rf:
                 line_split = line.strip().split(",")
                 slide_name = line_split[0]
                 patch_name = line_split[1]
-                start_layer = int(line_split[-1])
+                start_layer = int(line_split[-2])
+                clear_frame = int(line_split[-1])
 
                 if slide_name not in start_layer_dict:
                     start_layer_dict[slide_name] = {}
-                start_layer_dict[slide_name][patch_name] = start_layer
+                    blur_degree_dict[slide_name] = {}
+                start_layer_dict[slide_name][patch_name] = (start_layer, clear_frame)
+                blur_degree_dict[slide_name][patch_name] = [float(score) for score in line_split[2:-2]]
 
         print("Loading image paths from \"{}\".".format(data_dir))
         img_dict = {}
@@ -99,20 +104,31 @@ class AMCDataset(Dataset):
                     img_dict[slide_name][patch_name][layer] = patch_path
 
         self.samples = []
+        self.clear_frames = []
+        self.blur_degrees = []
         for slide_name, slide_data in img_dict.items():
             for patch_name, patch_data in slide_data.items():
                 try:
-                    start_layer = start_layer_dict[slide_name][patch_name]
+                    start_layer = start_layer_dict[slide_name][patch_name][0]
+                    clear_frame = start_layer_dict[slide_name][patch_name][1]
                 except KeyError as e:
                     continue
 
                 patch_imgs = []
+                blurs = []
+                valid_clear_frame = False
                 for i, (layer, patch_path) in enumerate(sorted(patch_data.items())):
                     if i >= start_layer:
                         patch_imgs.append(patch_path)
+                        blurs.append(blur_degree_dict[slide_name][patch_name][i])
+                    if i == clear_frame:
+                        self.clear_frames.append(clear_frame - start_layer)
+                        valid_clear_frame = True
                     if len(patch_imgs) == sample_frames:
                         break
-                self.samples.append(patch_imgs)
+                if valid_clear_frame:
+                    self.samples.append(patch_imgs)
+                    self.blur_degrees.append(blurs)
 
         print("{} samples loaded.".format(len(self.samples)))
 
@@ -153,6 +169,8 @@ class AMCDataset(Dataset):
 
     def __getitem__(self, index):
         selected_frames = self.samples[index]
+        blur_degrees = self.blur_degrees[index]
+        blur_degrees = np.array(blur_degrees) <= self.blur_threshold
         # p = random.choice(['A', 'B', 'C'])
         # if p == 'A':
         #     selected_frames = [frames[0], frames[2], frames[4]]
@@ -161,12 +179,11 @@ class AMCDataset(Dataset):
         # else:
         #     selected_frames = [frames[4], frames[6], frames[8]]
 
-        q = random.uniform(0, 1)
-        if q > 0.5:
-            selected_frames = selected_frames[::-1]
+        # q = random.uniform(0, 1)
+        # if q > 0.5:
+        #     selected_frames = selected_frames[::-1]
 
         pixel_values = torch.empty((self.sample_frames, self.channels, self.img_size, self.img_size))
-        # pixel_values_flipped = torch.empty((self.sample_frames, self.channels, self.img_size, self.img_size))
 
         # Load and process each frame
         for i, frame_path in enumerate(selected_frames):
@@ -174,13 +191,12 @@ class AMCDataset(Dataset):
                 # Resize the image and convert it to a tensor
                 img_tensor = self.transform(img)
                 pixel_values[i] = img_tensor
-                # pixel_values_flipped[-i - 1] = img_tensor
 
-        middle_frame = selected_frames[(self.sample_frames-1) // 2]
-        middle_frame = Image.open(middle_frame)
-        middle_frame = self.transform_middle(middle_frame)
+        clear_frame = pixel_values[self.clear_frames[index]]
+        # clear_frame = Image.open(clear_frame)
+        # clear_frame = self.transform_middle(clear_frame)
 
-        return {'pixel_values': pixel_values, 'middle_frame': middle_frame}
+        return {'pixel_values': pixel_values, 'clear_frame': clear_frame, 'blur_bool': list(blur_degrees)}
 
 
     def __len__(self):

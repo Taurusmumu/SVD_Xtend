@@ -320,7 +320,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=15,
+        default=14,
     )
     parser.add_argument(
         "--width",
@@ -350,7 +350,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output0604/',
+        default='/ssd2/AMC_zstack_2_patches/output0610/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -541,7 +541,7 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default='checkpoint-45000', # checkpoint-40000
+        default=None, # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -949,13 +949,12 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                middle_idx = (args.num_frames - 1 ) // 2
-                conditional_pixel_values = pixel_values[:, middle_idx:middle_idx+1, :, :, :]
-                middle_frames = batch["middle_frame"].to(weight_dtype).to(
+                conditional_pixel_values = batch["clear_frame"]
+                conditional_pixel_values = conditional_pixel_values.to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                # middle_frames = middle_frames[:, None, :]
-
+                encoder_hidden_states = encode_image(conditional_pixel_values.float())
+                conditional_pixel_values = conditional_pixel_values[:, None, :]
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
                 # pixel_values_flipped = batch["pixel_values_flipped"].to(weight_dtype).to(
@@ -990,8 +989,7 @@ def main():
                 # Get the text embedding for conditioning.
                 # encoder_hidden_states = encode_image(
                 #     pixel_values[:, 0, :, :, :].float())
-                encoder_hidden_states = encode_image(
-                    middle_frames.float())
+
 
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
@@ -1045,18 +1043,13 @@ def main():
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
                 weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
 
-                # torch.
-
                 # MSE loss
-                loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    dim=1,
-                )  # [B, 3, 4, 32, 32] -> [B]
-                # loss_fliped = torch.mean((weighing.float() * (denoised_latents.float() - latents_flipped.float()) ** 2).reshape(latents_flipped.shape[0], -1),
-                #     dim=1,
-                # )  # [B, 3, 4, 32, 32] -> [B]
-                # loss = torch.minimum(loss, loss_fliped)
-                loss = loss.mean()
-
+                loss_msk = torch.stack(batch["blur_bool"], dim=0)
+                loss_msk = loss_msk.permute(1, 0)
+                loss_msk = loss_msk[:, :, None, None, None]
+                loss_msk = loss_msk.expand(-1, -1, denoised_latents.shape[2], denoised_latents.shape[3], denoised_latents.shape[4])
+                # loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk])
+                loss = torch.sum((weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk]) / torch.sum(torch.ones_like(loss_msk))
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
                     loss.repeat(args.per_gpu_batch_size)).mean()
