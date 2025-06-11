@@ -34,6 +34,7 @@ class AMCDataset(Dataset):
             data_dir="/ssd2/AMC_zstack_2_patches/pngs_mid",
             start_layer_path="/home/compu/jiamu/SVD_Xtend/image_process/blur_data3.csv",
             split_file="/ssd2/AMC_zstack_2_patches/base_sudo_anno.txt",
+            num_layers=19,
     ):
         self.blur_threshold = blur_threshold
         self.channels = channels
@@ -58,6 +59,7 @@ class AMCDataset(Dataset):
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ])
+        self.num_layers = num_layers
 
         split_dict = {}
         with open(split_file, "r") as rf:
@@ -132,45 +134,14 @@ class AMCDataset(Dataset):
 
         print("{} samples loaded.".format(len(self.samples)))
 
-    # def __getitem__(self, index):
-    #     frames = self.samples[index]
-    #     # if self.split == "train":
-    #     #     img_path = random.choice(img_paths)
-    #     # else:
-    #     #     img_path = img_paths[len(img_paths) // 2]
-    #     #
-    #     # image = Image.open(img_path)
-    #     # image = self.transform(image)
-    #     #
-    #     # return image
-    #
-    #     # Randomly select a start index for frame sequence
-    #     # start_idx = random.randint(0, len(frames) - self.sample_frames)
-    #     p = random.uniform(0, 1)
-    #     if p > 0.5:
-    #         # Select frames at even indices
-    #         # selected_frames = [frames[0]] + [frames[2]] + [frames[4]] + [frames[6]] + [frames[8]]
-    #         selected_frames = [frames[0]] + [frames[4]] + [frames[8]]
-    #     else:
-    #         # Select frames at odd indices
-    #         selected_frames = [frames[8]] + [frames[4]] + [frames[0]]
-    #
-    #     # Initialize a tensor to store the pixel values
-    #     pixel_values = torch.empty((self.sample_frames, self.channels, self.img_size, self.img_size))
-    #
-    #     # Load and process each frame
-    #     for i, frame_path in enumerate(selected_frames):
-    #         with Image.open(frame_path) as img:
-    #             # Resize the image and convert it to a tensor
-    #             img_tensor = self.transform(img)
-    #             pixel_values[i] = img_tensor
-    #     return {'pixel_values': pixel_values}
-
-
     def __getitem__(self, index):
         selected_frames = self.samples[index]
         blur_degrees = self.blur_degrees[index]
         blur_degrees = np.array(blur_degrees) <= self.blur_threshold
+
+        # selected_frames, start_layer = self.samples[index]
+        # alpha = start_layer / self.num_layers
+
         # p = random.choice(['A', 'B', 'C'])
         # if p == 'A':
         #     selected_frames = [frames[0], frames[2], frames[4]]
@@ -197,6 +168,7 @@ class AMCDataset(Dataset):
         # clear_frame = self.transform_middle(clear_frame)
 
         return {'pixel_values': pixel_values, 'clear_frame': clear_frame, 'blur_bool': list(blur_degrees)}
+        # return {'pixel_values': pixel_values, 'middle_frame': middle_frame, 'alpha': alpha}
 
 
     def __len__(self):

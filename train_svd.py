@@ -16,22 +16,24 @@
 
 """Script to fine-tune Stable Video Diffusion."""
 import argparse
-import random
 import logging
-import math
 import os
-import cv2
+import random
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
+
+import cv2
+import math
+
 from dataloader import AMCDataset
+
 os.environ["CUDA_VISIBLE_DEVICES"] = '0, 1, 2, 3'
 import accelerate
 import numpy as np
 import PIL
-from PIL import Image, ImageDraw
+from PIL import Image
 import torch
-import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.utils.data import RandomSampler
 import transformers
@@ -46,13 +48,12 @@ from einops import rearrange
 
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
-from diffusers.models.lora import LoRALinearLayer
-from diffusers import AutoencoderKLTemporalDecoder, EulerDiscreteScheduler, UNetSpatioTemporalConditionModel
-from diffusers.image_processor import VaeImageProcessor
+from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
+from src.Unet import UNetSpatioTemporalConditionModelWithEmbedder
 
 from torch.utils.data import Dataset
 
@@ -60,6 +61,7 @@ from torch.utils.data import Dataset
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
+
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
@@ -135,6 +137,7 @@ class DummyDataset(Dataset):
 
                 pixel_values[i] = img_normalized
         return {'pixel_values': pixel_values}
+
 
 # resizing utils
 # TODO: clean up later
@@ -223,7 +226,7 @@ def _gaussian(window_size: int, sigma):
     batch_size = sigma.shape[0]
 
     x = (torch.arange(window_size, device=sigma.device,
-         dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
+                      dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
 
     if window_size % 2 == 0:
         x = x + 0.5
@@ -541,7 +544,8 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default=None, # checkpoint-40000
+        # default=None, # checkpoint-40000
+        default='checkpoint-30000',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -558,6 +562,13 @@ def parse_args():
         type=str,
         default=None,
         help="use weight for unet block",
+    )
+
+    parser.add_argument(
+        "--embedder",
+        type=bool,
+        default=False,
+        action="store_true",
     )
 
     args = parser.parse_args()
@@ -654,12 +665,21 @@ def main():
     )
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
-    unet = UNetSpatioTemporalConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
-        subfolder="unet",
-        low_cpu_mem_usage=True,
-        variant="fp16"
-    )
+
+    if args.embbeder:
+        unet = UNetSpatioTemporalConditionModelWithEmbedder.from_pretrained(
+            args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
+            subfolder="unet",
+            low_cpu_mem_usage=True,
+            variant="fp16"
+        )
+    else:
+        unet = UNetSpatioTemporalConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
+            subfolder="unet",
+            low_cpu_mem_usage=True,
+            variant="fp16"
+        )
 
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
@@ -677,7 +697,6 @@ def main():
     # Move image_encoder and vae to gpu and cast to weight_dtype
     image_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
-
 
     # Create EMA for the unet.
     if args.use_ema:
@@ -744,8 +763,8 @@ def main():
 
     if args.scale_lr:
         args.learning_rate = (
-            args.learning_rate * args.gradient_accumulation_steps *
-            args.per_gpu_batch_size * accelerator.num_processes
+                args.learning_rate * args.gradient_accumulation_steps *
+                args.per_gpu_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -824,7 +843,7 @@ def main():
 
     if args.use_ema:
         ema_unet.to(accelerator.device)
-        
+
     # attribute handling for models using DDP
     if isinstance(unet, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)):
         unet = unet.module
@@ -845,7 +864,7 @@ def main():
 
     # Train!
     total_batch_size = args.per_gpu_batch_size * \
-        accelerator.num_processes * args.gradient_accumulation_steps
+                       accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -882,16 +901,16 @@ def main():
         return image_embeddings
 
     def _get_add_time_ids(
-        fps,
-        motion_bucket_id,
-        noise_aug_strength,
-        dtype,
-        batch_size,
+            fps,
+            motion_bucket_id,
+            noise_aug_strength,
+            dtype,
+            batch_size,
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
         passed_add_embed_dim = unet.config.addition_time_embed_dim * \
-            len(add_time_ids)
+                               len(add_time_ids)
         expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
@@ -927,7 +946,7 @@ def main():
             resume_global_step = global_step * args.gradient_accumulation_steps
             first_epoch = global_step // num_update_steps_per_epoch
             resume_step = resume_global_step % (
-                num_update_steps_per_epoch * args.gradient_accumulation_steps)
+                    num_update_steps_per_epoch * args.gradient_accumulation_steps)
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, args.max_train_steps),
@@ -955,6 +974,11 @@ def main():
                 )
                 encoder_hidden_states = encode_image(conditional_pixel_values.float())
                 conditional_pixel_values = conditional_pixel_values[:, None, :]
+
+                # if args.embeddder:
+                #     alpha = batch["alpha"].to(weight_dtype).to(
+                #         accelerator.device, non_blocking=True
+                #     )
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
                 # pixel_values_flipped = batch["pixel_values_flipped"].to(weight_dtype).to(
@@ -966,8 +990,8 @@ def main():
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
 
-                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
+                cond_sigmas = rand_log_normal(shape=[bsz, ], loc=-3.0, scale=0.5).to(latents)
+                noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
@@ -976,7 +1000,7 @@ def main():
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                sigmas = rand_log_normal(shape=[bsz, ], loc=0.7, scale=1.6).to(latents.device)
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
@@ -984,20 +1008,19 @@ def main():
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                inp_noisy_latents = noisy_latents / ((sigmas ** 2 + 1) ** 0.5)
 
                 # Get the text embedding for conditioning.
                 # encoder_hidden_states = encode_image(
                 #     pixel_values[:, 0, :, :, :].float())
 
-
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
                 added_time_ids = _get_add_time_ids(
-                    7, # fixed
-                    127, # motion_bucket_id = 127, fixed
-                    noise_aug_strength, # noise_aug_strength == cond_sigmas
+                    7,  # fixed
+                    127,  # motion_bucket_id = 127, fixed
+                    noise_aug_strength,  # noise_aug_strength == cond_sigmas
                     encoder_hidden_states.dtype,
                     bsz,
                 )
@@ -1018,9 +1041,9 @@ def main():
                     # Sample masks for the original images.
                     image_mask_dtype = conditional_latents.dtype
                     image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                            (random_p >= args.conditioning_dropout_prob).to(
+                                image_mask_dtype)
+                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
                     image_mask = image_mask.reshape(bsz, 1, 1, 1)
                     # Final image conditioning.
@@ -1034,14 +1057,17 @@ def main():
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+
+                if args.embeddder:
+                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids, alpha=alpha).sample
+                else:
+                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
-                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                c_skip = 1 / (sigmas**2 + 1)
+                c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)
+                c_skip = 1 / (sigmas ** 2 + 1)
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+                weighing = (1 + sigmas ** 2) * (sigmas ** -2.0)
 
                 # MSE loss
                 loss_msk = torch.stack(batch["blur_bool"], dim=0)
@@ -1050,6 +1076,16 @@ def main():
                 loss_msk = loss_msk.expand(-1, -1, denoised_latents.shape[2], denoised_latents.shape[3], denoised_latents.shape[4])
                 # loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk])
                 loss = torch.sum((weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk]) / torch.sum(torch.ones_like(loss_msk))
+
+                # loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                #                   dim=1,
+                #                   )  # [B, 3, 4, 32, 32] -> [B]
+                # loss_fliped = torch.mean((weighing.float() * (denoised_latents.float() - latents_flipped.float()) ** 2).reshape(latents_flipped.shape[0], -1),
+                #     dim=1,
+                # )  # [B, 3, 4, 32, 32] -> [B]
+                # loss = torch.minimum(loss, loss_fliped)
+                # loss = loss.mean()
+
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
                     loss.repeat(args.per_gpu_batch_size)).mean()
@@ -1106,8 +1142,8 @@ def main():
                         logger.info(f"Saved state to {save_path}")
                     # sample images!
                     if (
-                        (global_step % args.validation_steps == 0)
-                        or (global_step == 1)
+                            (global_step % args.validation_steps == 0)
+                            or (global_step == 1)
                     ):
                         logger.info(
                             f"Running validation... \n Generating {args.num_validation_images} videos."
@@ -1138,7 +1174,7 @@ def main():
                             os.makedirs(val_save_dir)
 
                         with torch.autocast(
-                            str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
+                                str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
                             val_arr = ['patch_47_6181_4930.png', 'patch_6570_17725_29207.png', 'patch_6507_20844_15426.png', 'patch_956_7003_23258.png']
                             for val_img_idx in range(args.num_validation_images):
