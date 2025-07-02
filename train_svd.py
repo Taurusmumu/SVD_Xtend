@@ -53,7 +53,7 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
-from src.Unet import UNetSpatioTemporalConditionModelWithEmbedder
+# from src.Unet import UNetSpatioTemporalConditionModelWithEmbedder
 
 from torch.utils.data import Dataset
 
@@ -323,7 +323,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=14,
+        default=11,
     )
     parser.add_argument(
         "--width",
@@ -353,7 +353,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output0610/',
+        default='/ssd2/AMC_zstack_2_patches/output0701/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -362,10 +362,10 @@ def parse_args():
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=2,
+        default=3,
         help="Batch size (per device) for the training dataloader.",
     )
-    parser.add_argument("--num_train_epochs", type=int, default=20)
+    parser.add_argument("--num_train_epochs", type=int, default=10)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -445,7 +445,7 @@ def parse_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=0,
+        default=8,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
@@ -544,8 +544,8 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        # default=None, # checkpoint-40000
-        default='checkpoint-30000',  # checkpoint-40000
+        default=None, # checkpoint-40000
+        # default='checkpoint-220000',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -564,12 +564,12 @@ def parse_args():
         help="use weight for unet block",
     )
 
-    parser.add_argument(
-        "--embedder",
-        type=bool,
-        default=False,
-        action="store_true",
-    )
+    # parser.add_argument(
+    #     "--embbeder",
+    #     type=bool,
+    #     default=False,
+    #     action="store_true",
+    # )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -666,20 +666,20 @@ def main():
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
 
-    if args.embbeder:
-        unet = UNetSpatioTemporalConditionModelWithEmbedder.from_pretrained(
-            args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
-            subfolder="unet",
-            low_cpu_mem_usage=True,
-            variant="fp16"
-        )
-    else:
-        unet = UNetSpatioTemporalConditionModel.from_pretrained(
-            args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
-            subfolder="unet",
-            low_cpu_mem_usage=True,
-            variant="fp16"
-        )
+    # if args.embbeder:
+    #     unet = UNetSpatioTemporalConditionModelWithEmbedder.from_pretrained(
+    #         args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
+    #         subfolder="unet",
+    #         low_cpu_mem_usage=True,
+    #         variant="fp16"
+    #     )
+    # else:
+    unet = UNetSpatioTemporalConditionModel.from_pretrained(
+        args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
+        subfolder="unet",
+        low_cpu_mem_usage=True,
+        variant="fp16"
+    )
 
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
@@ -968,7 +968,7 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                conditional_pixel_values = batch["clear_frame"]
+                conditional_pixel_values = batch["mid_frame"]
                 conditional_pixel_values = conditional_pixel_values.to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
@@ -1058,10 +1058,10 @@ def main():
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
 
-                if args.embeddder:
-                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids, alpha=alpha).sample
-                else:
-                    model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+                # if args.embeddder:
+                #     model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids, alpha=alpha).sample
+                # else:
+                model_pred = unet(inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)
@@ -1176,7 +1176,7 @@ def main():
                         with torch.autocast(
                                 str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
-                            val_arr = ['patch_47_6181_4930.png', 'patch_6570_17725_29207.png', 'patch_6507_20844_15426.png', 'patch_956_7003_23258.png']
+                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png', 'patch_6570_17725_29207.png', 'patch_9993_29408_33490.png']
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(

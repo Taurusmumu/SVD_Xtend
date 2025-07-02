@@ -10,7 +10,7 @@ import random
 
 
 class GTSampleDataset(Dataset):
-    def __init__(self, data_dir, sample_file_path, img_size=256, num_frames=15):
+    def __init__(self, data_dir, sample_file_path, img_size=256, num_frames=11):
         self.data_dir = data_dir
         self.img_size = img_size
         self.sample_frames = num_frames
@@ -19,8 +19,10 @@ class GTSampleDataset(Dataset):
         layers = list(sample_file.columns[2:-1])
         slides = list(sample_file["slide_name"])
         patches = list(sample_file["patch_name"])
-        start_layers = list(sample_file["min_indices"])
+        start_layers = list(sample_file["start_indices"])
+        # clean_layers = list(sample_file["min_indices"])
         self.file_list = []
+        self.start_list = []
         for i in range(len(slides)):
             frames = layers[start_layers[i]: start_layers[i] + self.sample_frames]
             # p = random.choice(['A', 'B', 'C'])
@@ -36,6 +38,8 @@ class GTSampleDataset(Dataset):
                 patch_path = f"{slides[i]},{frame},{patches[i]}"
                 frame_list.append(patch_path)
             self.file_list.append(frame_list)
+            # self.clean_list.append(layers[clean_layers[i]])
+            self.start_list.append(start_layers[i])
 
     def __len__(self):
         return len(self.file_list)
@@ -45,6 +49,7 @@ class GTSampleDataset(Dataset):
         output = {
             "source_paths": [],
             "save_paths": [],
+            "frames": []
         }
         for frame in file_path:
             slide_name, layer, patch_name = frame.split(',')
@@ -54,6 +59,12 @@ class GTSampleDataset(Dataset):
             output["source_paths"].append(full_path)
             save_path = os.path.join(self.data_dir, slide_name, patch_name.split('.')[0], f"{layer}.png")
             output["save_paths"].append(save_path)
+            output["frames"].append(layer)
+        # output["clear_frames"] = os.path.join(self.image_root_path, slide_name, self.clean_list[idx], patch_name)
+        output["slide_name"] = slide_name
+        output["patch_name"] = patch_name.split('.')[0]
+        output["start_index"] = self.start_list[idx]
+        output["middle_frames"] = os.path.join(self.image_root_path, slide_name, output["frames"][len(output["frames"]) // 2], patch_name)
 
         return output
 

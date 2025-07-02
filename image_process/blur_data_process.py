@@ -16,7 +16,7 @@ def find_valid_patches(blur_data_df, blur_scores, threshold, consecutive_require
     # Convolve each row with kernel to find consecutive sequences quickly
     consecutive_counts = convolve2d(below_threshold, kernel[None, :], mode='valid')
     # Check if any position in the patch satisfies the consecutive criteria
-    valid_patches = np.any(consecutive_counts >= 10, axis=1)
+    valid_patches = np.any(consecutive_counts == 11, axis=1)
     valid_patches_indices = np.where(valid_patches)[0]
     blur_data_df = blur_data_df.iloc[valid_patches_indices]
     blur_scores = blur_scores[valid_patches_indices]
@@ -27,14 +27,47 @@ def find_valid_patches(blur_data_df, blur_scores, threshold, consecutive_require
 
     return blur_data_df, blur_scores, start_indices, min_indices
 
+def find_valid_patches1(blur_data_df, blur_scores1, threshold, consecutive_required):
+    below_threshold1 = blur_scores1 < threshold
+
+    valid_sum = np.sum(below_threshold1,axis=1)
+    below_threshold = below_threshold1[valid_sum >= 5]
+    blur_scores = blur_scores1[valid_sum >= 5]
+    blur_data_df = blur_data_df.loc[valid_sum >= 5]
+
+    min_indices = np.argmin(blur_scores, axis=1)
+    start_indices = min_indices - consecutive_required // 2
+    psudo_start_indices = np.array(start_indices)
+    psudo_start_indices[psudo_start_indices < 0] = 0
+    end_indices = min_indices + consecutive_required // 2
+    psudo_end_indices = np.array(end_indices)
+    psudo_end_indices[psudo_end_indices >= blur_scores.shape[1] - 1] = blur_scores.shape[1] - 1
+
+    for i in range(len(start_indices)):
+        below_threshold[i, :psudo_start_indices[i]] = False
+        below_threshold[i, psudo_end_indices[i] + 1:] = False
+
+    arr = np.full((len(start_indices), consecutive_required), False, dtype=bool)
+    for i in range(len(start_indices)):
+        if (start_indices[i] == psudo_start_indices[i]) and (end_indices[i] == psudo_end_indices[i]):
+            arr[i] = below_threshold[i, start_indices[i]: end_indices[i] + 1]
+            assert len(below_threshold[i, start_indices[i]: end_indices[i] + 1]) == consecutive_required
+        elif start_indices[i] < 0:
+            arr[i, -start_indices[i]: ] = below_threshold[i, : end_indices[i] + 1]
+            # assert consecutive_required + start_indices[i] ==  end_indices[i] + 1
+        elif end_indices[i] >= blur_scores.shape[1]:
+            arr[i, :blur_scores.shape[1] - start_indices[i]] = below_threshold[i, start_indices[i]:]
+
+    return blur_data_df, blur_scores, start_indices, min_indices, end_indices
+
 
 if __name__ == "__main__":
 
     # layers = ["z01", "z03", "z05", "z07", "z09", "z11", "z13", "z15", "z17"]
     # layers = ["z00", "z03", "z06", "z09", "z12", "z15", "z18"]
     layers = ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14", "z15", "z16", "z17", "z18"]
-    threshold = 0.4
-    consecutive_layers_required = 14
+    threshold = 0.2
+    consecutive_layers_required = 11
     blur_data_df = pd.read_csv('./blur_data.csv')
 
     file = open(image_info_path, "r")
@@ -74,7 +107,7 @@ if __name__ == "__main__":
     plt.xlabel("Minimum Blur Score")
     plt.ylabel("Number of 3D Images")
     plt.grid(True)
-    plt.show()
+    # plt.show()
     min_mean = np.mean(blur_scores_min)
     min_std = np.std(blur_scores_min)
     print(min_mean)
@@ -89,12 +122,13 @@ if __name__ == "__main__":
     blur_scores_norm = np.sqrt(np.square(blur_scores) - np.square(blur_scores_min))
 
     # Execute the function
-    blur_data_df, blur_scores_norm, start_indices, min_indices = find_valid_patches(blur_data_df, blur_scores_norm, threshold, consecutive_layers_required)
+    blur_data_df, blur_scores_norm, start_indices, min_indices, end_indices = find_valid_patches1(blur_data_df, blur_scores_norm, threshold, consecutive_layers_required)
     for i, layer in enumerate(layers):
         blur_data_df[layer] = blur_scores_norm[:, i]
 
     blur_data_df["start_indices"] = start_indices
+    blur_data_df["end_indices"] = end_indices
     blur_data_df["min_indices"] = min_indices
-    blur_data_df.to_csv("./blur_data3.csv", index=False)
+    blur_data_df.to_csv("./blur_data5.csv", index=False)
 
 

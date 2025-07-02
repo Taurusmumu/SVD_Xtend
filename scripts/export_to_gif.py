@@ -2,7 +2,8 @@ import os
 
 import numpy as np
 from PIL import Image
-import pandas as pd
+from PIL import ImageFont
+from PIL import ImageDraw
 
 def from_number_to_layer(layer_number):
     """
@@ -40,31 +41,38 @@ def export_to_gif(frames, output_gif_path, fps):
 
 if __name__ == "__main__":
     root_path = "/ssd2/AMC_zstack_2_patches/pngs_mid"
-    pred_path = "/ssd2/AMC_zstack_2_patches/output_for_metrics/Pred/output0526_100000"
-    output_gif_path = "/ssd2/AMC_zstack_2_patches/output0526/pairs/"
+    pred_path = "/ssd2/AMC_zstack_2_patches/output_for_metrics/output0623/Pred_random/200000/"
+    output_gif_path = "/ssd2/AMC_zstack_2_patches/output0623/pairs/"
+    num_frame = 11
     os.makedirs(output_gif_path, exist_ok=True)
     info_sets = []
+    # info_sets.append({
+    #     "patch_name": "patch_6446_23008_34514",
+    #     "silde": '24S 053791;A;12;;FA0824;1_241226_081326',
+    #     "start_layer": 0,
+    # })
+    # info_sets.append({
+    #     "patch_name": "patch_9993_29408_33490",
+    #     "silde": '24S 053791;A;12;;FA0824;1_241226_081326',
+    #     "start_layer": 0,
+    # })
+    #
+    # info_sets.append({
+    #     "patch_name": "patch_6507_20844_15426",
+    #     "silde": '24S 075098;A;8;;FA0824;1_241225_103552',
+    #     "start_layer": 0,
+    # })
+    #
+    # info_sets.append({
+    #     "patch_name": "patch_6570_17725_29207",
+    #     "silde": '24S 064735;E;11;;FA0824;1_241224_190437',
+    #     "start_layer": 5,
+    # })
+
     info_sets.append({
-        "patch_name": "patch_4138_15580_45977",
-        "silde": '24S 074983;D;8;;FA0824;1_241225_093459',
+        "patch_name": "patch_6114_17494_46381",
+        "silde": '24S 048630;E;10;;FA0824;1_241226_161645',
         "start_layer": 0,
-    })
-    info_sets.append({
-        "patch_name": "patch_286_9553_41896",
-        "silde": '24S 059505;E;5;;FA0824;1_241226_011806',
-        "start_layer": 10,
-    })
-
-    info_sets.append({
-        "patch_name": "patch_8292_19201_39940",
-        "silde": '24S 071781;E;7;;FA0824;1_241225_064219',
-        "start_layer": 4,
-    })
-
-    info_sets.append({
-        "patch_name": "patch_3606_14819_13303",
-        "silde": '24S 048905;E;7;;FA0824;1_241226_155450',
-        "start_layer": 8,
     })
 
     for info in info_sets:
@@ -73,18 +81,23 @@ if __name__ == "__main__":
         start_layer = info["start_layer"]
 
         frames = []
-        for layer in range(start_layer, start_layer + 19, 2):
+        index = 0
+        for layer in range(start_layer, start_layer + num_frame, 1):
             frame_path = f"{root_path}/{slide}/z{from_number_to_layer(layer)}/{patch_name}.png"
             print(frame_path)
             frame = Image.open(frame_path)
+            draw = ImageDraw.Draw(frame)
+            draw.text((10, 10), "Layer {}".format(index + 1), (255, 255, 255), font=ImageFont.load_default())
             frames.append(frame)
+            index += 1
 
         export_to_gif(frames, output_gif_path + f"/{patch_name}_GT.gif", fps=10)
 
         pred_frames = []
         pred_folder_path = os.path.join(pred_path, slide, patch_name)
-        for frame in os.listdir(pred_folder_path):
-            frame_path = f"{pred_folder_path}/{frame}"
+        index = 0
+        for frame in range(start_layer, start_layer + num_frame, 1):
+            frame_path = f"{pred_folder_path}/z{from_number_to_layer(frame)}.png"
             print(frame_path)
             frame = Image.open(frame_path)
             pred_frames.append(frame)

@@ -17,7 +17,7 @@
 import logging
 import os
 import time
-os.environ['CUDA_VISIBLE_DEVICES']='4'
+os.environ['CUDA_VISIBLE_DEVICES']='2'
 import sys
 import pandas as pd
 import numpy as np
@@ -87,10 +87,12 @@ def convert_to_tensor(no_array):
 
 
 if __name__ == "__main__":
+    layers = ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14",
+              "z15", "z16", "z17", "z18"]
     size = 256
     sample_num = 2048
     sample_num_frame = 10000
-    blur_data_path = "/home/compu/jiamu/SVD_Xtend/image_process/blur_data2.csv"
+    blur_data_path = "/home/compu/jiamu/SVD_Xtend/image_process/blur_data4.csv"
     split_file_path = "/ssd2/AMC_zstack_2_patches/base_sudo_anno.txt"
     data_root_path = "/ssd2/AMC_zstack_2_patches/pngs_mid"
     sample_GT_done = True
@@ -98,15 +100,15 @@ if __name__ == "__main__":
     # sample_pred_match_done, metric_set_1_done = False, False
     # sample_pred_random_done, metric_set_2_done = True, True
 
-    sample_pred_match_done, metric_set_1_done = True, True
-    sample_pred_random_done, metric_set_2_done = True, False
+    sample_pred_match_done, metric_set_1_done = True, False
+    sample_pred_random_done, metric_set_2_done = True, True
 
-    ckp_v = 90000
-    version = "output0604"
-    num_frame = 15
+    ckp_v = 200000
+    version = "output0623"
+    num_frame = 11
     sample_file_gt_path = f"/home/compu/jiamu/SVD_Xtend/image_process/{version}/blur_data_sampled_{sample_num}.csv"
     sample_file_random_path = f"/home/compu/jiamu/SVD_Xtend/image_process/{version}/blur_data_sampled1_{sample_num}.csv"
-    os.makedirs("/home/compu/jiamu/SVD_Xtend/image_process/{version}/", exist_ok=True)
+    os.makedirs(f"/home/compu/jiamu/SVD_Xtend/image_process/{version}/", exist_ok=True)
     output_dir = f"/ssd2/AMC_zstack_2_patches/output_for_metrics/{version}"
     pretrained_model_path = f"/ssd2/AMC_zstack_2_patches/{version}/checkpoint-{ckp_v}"
     pretrained_model_name = "stabilityai/stable-video-diffusion-img2vid-xt"
@@ -186,32 +188,36 @@ if __name__ == "__main__":
         pipeline.to(device)
         pipeline.enable_model_cpu_offload()
         with distributed_state.main_process_first():
-            for i in tqdm(range(len(os.listdir(gt_dir)))):
-                if i % distributed_state.num_processes != distributed_state.process_index:
-                    continue
+            # for i in tqdm(range(len(os.listdir(gt_dir)))):
+            #     if i % distributed_state.num_processes != distributed_state.process_index:
+            #         continue
 
-                slide = os.listdir(gt_dir)[i]
-                print(slide)
-                slide_dir = os.path.join(gt_dir, slide)
-                for patch in os.listdir(slide_dir):
+            from scripts.dataloaders import GTSampleDataset
+
+            dataset = GTSampleDataset(data_dir=gt_dir, sample_file_path=sample_file_gt_path, num_frames=num_frame)
+            dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
+            for batch in tqdm(dataloader):
+                middle_frames = batch["middle_frames"]
+                slides = batch["slide_name"]
+                patches = batch["patch_name"]
+                start_indexes = batch["start_index"]
+                for i in range(len(slides)):
+                    slide = slides[i]
+                    patch = patches[i]
+                    middle_frame = middle_frames[i]
+                    start_index = start_indexes[i]
+                    frames = layers[start_index: start_index + num_frame]
                     out_path = os.path.join(
                         fake_match_dir, slide, patch,
                     )
                     if os.path.exists(out_path) and len(os.listdir(out_path)) == num_frame:
                         continue
 
-                    patch_dir = os.path.join(slide_dir, patch)
-                    pred_frames = []
-                    for frame_path in os.listdir(patch_dir):
-                        pred_frames.append(os.path.join(patch_dir, frame_path))
-
-                    frame_length = len(pred_frames)
-                    mid_frame = pred_frames[(frame_length - 1) // 2]
                     video_frames = pipeline(
-                        load_image(mid_frame).resize((size, size)),
+                        load_image(middle_frame).resize((size, size)),
                         height=size,
                         width=size,
-                        num_frames=len(pred_frames),
+                        num_frames=len(frames),
                         decode_chunk_size=8,
                         motion_bucket_id=127,
                         fps=7,
@@ -219,11 +225,11 @@ if __name__ == "__main__":
                         # generator=generator,
                     ).frames[0]
                     os.makedirs(out_path, exist_ok=True)
-                    for i in range(len(pred_frames)):
+                    for i in range(len(frames)):
                         img = video_frames[i]
                         # img = np.array(img)
                         # img = Image.fromarray(img)
-                        img.save(os.path.join(fake_match_dir, slide, patch, f"{pred_frames[i].split('/')[-1]}"))
+                        img.save(os.path.join(fake_match_dir, slide, patch, f"{frames[i]}.png"))
 
             end = time.time()
             elapsed = end - start
@@ -310,17 +316,16 @@ if __name__ == "__main__":
         pipeline.to(device)
         pipeline.enable_model_cpu_offload()
 
-
         random_df = pd.read_csv(sample_file_random_path)
-        layers = list(random_df.columns[2:-1])
+        layers = list(random_df.columns[2:-2])
         slides = list(random_df["slide_name"])
         patches = list(random_df["patch_name"])
-        start_layers = list(random_df["min_indices"])
+        start_layers = list(random_df["start_indices"])
 
         with distributed_state.main_process_first():
             for i in tqdm(range(len(slides))):
-                if i % distributed_state.num_processes != distributed_state.process_index:
-                    continue
+                # if i % distributed_state.num_processes != distributed_state.process_index:
+                #     continue
 
                 slide, patch = slides[i], patches[i]
                 print(slide)
@@ -345,9 +350,10 @@ if __name__ == "__main__":
                     # generator=generator,
                 ).frames[0]
                 os.makedirs(out_path, exist_ok=True)
-                for i in range(num_frame):
-                    img = video_frames[i]
-                    img.save(os.path.join(fake_random_dir, slide, patch.split('.')[0], f"{frames[i]}.png"))
+                for f in range(num_frame):
+                    img = video_frames[f]
+                    print(os.path.join(fake_random_dir, slide, patch.split('.')[0], f"{frames[f]}.png"))
+                    img.save(os.path.join(fake_random_dir, slide, patch.split('.')[0], f"{frames[f]}.png"))
 
             end = time.time()
             elapsed = end - start
