@@ -42,24 +42,31 @@ def find_valid_patches1(blur_data_df, blur_scores1, threshold, consecutive_requi
     end_indices = min_indices + consecutive_required // 2
     psudo_end_indices = np.array(end_indices)
     psudo_end_indices[psudo_end_indices >= blur_scores.shape[1] - 1] = blur_scores.shape[1] - 1
+    blur_data_df["start_indices"] = start_indices
+    blur_data_df["end_indices"] = end_indices
+    blur_data_df["min_indices"] = min_indices
 
     for i in range(len(start_indices)):
         below_threshold[i, :psudo_start_indices[i]] = False
         below_threshold[i, psudo_end_indices[i] + 1:] = False
 
     arr = np.full((len(start_indices), consecutive_required), False, dtype=bool)
+    arr_extra = np.full((len(start_indices)), False, dtype=bool)
     for i in range(len(start_indices)):
         if (start_indices[i] == psudo_start_indices[i]) and (end_indices[i] == psudo_end_indices[i]):
             arr[i] = below_threshold[i, start_indices[i]: end_indices[i] + 1]
             assert len(below_threshold[i, start_indices[i]: end_indices[i] + 1]) == consecutive_required
+            if np.sum(arr[i]) == consecutive_required:
+                arr_extra[i] = True
         elif start_indices[i] < 0:
             arr[i, -start_indices[i]: ] = below_threshold[i, : end_indices[i] + 1]
             # assert consecutive_required + start_indices[i] ==  end_indices[i] + 1
         elif end_indices[i] >= blur_scores.shape[1]:
             arr[i, :blur_scores.shape[1] - start_indices[i]] = below_threshold[i, start_indices[i]:]
 
-    return blur_data_df, blur_scores, start_indices, min_indices, end_indices
+    # return blur_data_df[arr_extra], blur_scores[arr_extra]
 
+    return blur_data_df, blur_scores
 
 if __name__ == "__main__":
 
@@ -122,13 +129,15 @@ if __name__ == "__main__":
     blur_scores_norm = np.sqrt(np.square(blur_scores) - np.square(blur_scores_min))
 
     # Execute the function
-    blur_data_df, blur_scores_norm, start_indices, min_indices, end_indices = find_valid_patches1(blur_data_df, blur_scores_norm, threshold, consecutive_layers_required)
+    # blur_data_df, blur_scores_norm, start_indices, min_indices, end_indices = find_valid_patches(blur_data_df,
+    #                                                                                               blur_scores_norm,
+    #                                                                                               threshold,
+    #                                                                                               consecutive_layers_required)
+    blur_data_df, blur_scores_norm = find_valid_patches1(blur_data_df, blur_scores_norm, threshold, consecutive_layers_required)
     for i, layer in enumerate(layers):
         blur_data_df[layer] = blur_scores_norm[:, i]
 
-    blur_data_df["start_indices"] = start_indices
-    blur_data_df["end_indices"] = end_indices
-    blur_data_df["min_indices"] = min_indices
-    blur_data_df.to_csv("./blur_data5.csv", index=False)
+
+    blur_data_df.to_csv("./blur_data5_full_clean.csv", index=False)
 
 

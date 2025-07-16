@@ -235,18 +235,18 @@ def calculate_activation_statistics(files, model, batch_size=50, dims=2048,
 
 def compute_statistics_of_path(path, model, batch_size, dims, device,
                                num_workers=1, num_samples=None):
-    if path.endswith('.npz'):
+    # if path.endswith('.npz'):
+    if isinstance(path, str) and path.endswith('.npz'):
         with np.load(path) as f:
             m, s = f['mu'][:], f['sigma'][:]
     else:
-        path = pathlib.Path(path)
-        files = [file for ext in IMAGE_EXTENSIONS for file in path.glob('**/*.{}'.format(ext))]
+        # path = pathlib.Path(path)
+        # files = [file for ext in IMAGE_EXTENSIONS for file in path.glob('**/*.{}'.format(ext))]
+        files = path
         random.shuffle(files)
         if num_samples is not None:
             files = files[:num_samples]
         files = sorted(files)
-        # files = sorted([file for ext in IMAGE_EXTENSIONS
-        #                for file in path.glob('**/*.{}'.format(ext))])
         m, s = calculate_activation_statistics(files, model, batch_size,
                                                dims, device, num_workers)
 
@@ -255,9 +255,10 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
 
 def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1, num_samples=None):
     """Calculates the FID of two paths"""
-    for p in paths:
-        if not os.path.exists(p):
-            raise RuntimeError('Invalid path: %s' % p)
+    for path in paths:
+        for p in path:
+            if not os.path.exists(p):
+                raise RuntimeError('Invalid path: %s' % p)
 
     block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
 
@@ -290,6 +291,28 @@ def save_fid_stats(paths, batch_size, device, dims, num_workers=1):
                                         dims, device, num_workers)
 
     np.savez_compressed(paths[1], mu=m1, sigma=s1)
+
+
+class FID():
+    def __init__(self, input_dir: str, label_dir: str, device):
+        self.input_dir = input_dir
+        self.label_dir = label_dir
+        self.device = device
+        self.metric_fn = calculate_fid_given_paths
+
+    def __str__(self) -> str:
+        return 'FID'
+
+    def compute(self, num_samples=None):
+        # value = self.metric_fn([str(self.input_dir), str(self.label_dir)],
+        value = self.metric_fn([self.input_dir, self.label_dir],
+                               batch_size=1,
+                               device=self.device,
+                               dims=2048,
+                               num_samples=num_samples)
+
+        print(f"FID Result: {value}")
+        return value
 
 
 def main():
