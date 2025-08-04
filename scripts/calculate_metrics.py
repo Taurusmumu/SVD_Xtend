@@ -153,7 +153,6 @@ class LPIPS(Metric):
     def __str__(self):
         return 'LPIPS' 
 
-
 class PSNR(Metric):
     def __init__(self, input_dir: str, label_dir: str, logger, device):
         super().__init__(input_dir, label_dir, logger, device)
@@ -167,23 +166,25 @@ class PSNR(Metric):
         return img * 255
 
 
-class FID(Metric):
-    def __init__(self, input_dir: str, label_dir: str, logger, device):
-        super().__init__(input_dir, label_dir, logger, device)
+class FID():
+    def __init__(self, input_dir: str, label_dir: str, device):
+        self.input_dir = input_dir
+        self.label_dir = label_dir
+        self.device = device
         self.metric_fn = calculate_fid_given_paths
 
     def __str__(self) -> str:
         return 'FID'
 
     def compute(self, num_samples=None):
-        self.logger.info(f"Start to calculate metric {self}.")
-        value = self.metric_fn([str(self.input_dir), str(self.label_dir)],
+        # value = self.metric_fn([str(self.input_dir), str(self.label_dir)],
+        value = self.metric_fn([self.input_dir, self.label_dir],
                                batch_size=1,
                                device=self.device,
                                dims=2048,
                                num_samples=num_samples)
 
-        self.logger.info(f"Result: {value}")
+        print(f"Result: {value}")
         return value
 
 class MNC(Metric):

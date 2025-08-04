@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import time
-os.environ['CUDA_VISIBLE_DEVICES']='3'
+os.environ['CUDA_VISIBLE_DEVICES']='1'
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
@@ -49,21 +49,6 @@ distributed_state = PartialState()
 device = distributed_state.device
 
 
-# def sample_gt_images(gt_dir, sample_file_path, num_frame):
-#     from scripts.dataloaders import GTSampleDataset
-#     dataset = GTSampleDataset(data_dir=gt_dir, sample_file_path=sample_file_path, num_frames=num_frame)
-#     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
-#     for batch in tqdm(dataloader):
-#         source_paths = batch["source_paths"]
-#         save_paths = batch["save_paths"]
-#         for img, path in zip(source_paths, save_paths):
-#             for i in range(len(path)):
-#                 s_path = img[i]
-#                 o_path = path[i]
-#                 image = Image.open(s_path).convert("RGB")
-#                 os.makedirs(os.path.dirname(o_path), exist_ok=True)
-#                 image.save(o_path)
-
 def load_videos_from_folder(dir_path, match_sampled_pair_file=None):
     videos, blur_degrees = [], []
 
@@ -90,6 +75,84 @@ def convert_to_tensor(no_array):
     array = array.float() / 255.0  # Normalize to [0, 1]
     return array
 
+def calculate_metrics(match_sampled_pair_path,
+                      gt_np_2048,
+                      gt_np_2048_bd,
+                      gt_dir,
+                      pred_np_2048,
+                      fake_match_dir,
+                      metric_log,
+                      device,
+                      threshold=0.2,
+                      only_final = True,
+                      sample_num_frame=10000):
+    print("Calculating metrics for FVD...")
+    result = {}
+    match_sampled_pair_file_ori = pd.read_csv(match_sampled_pair_path)
+    if not os.path.isfile(gt_np_2048):
+        real_videos, blur_degrees = load_videos_from_folder(gt_dir, match_sampled_pair_file_ori)
+        np.save(gt_np_2048, real_videos.astype(np.float32))
+        np.save(gt_np_2048_bd, blur_degrees.astype(np.float32))
+    else:
+        real_videos = np.load(gt_np_2048).astype(np.float32)
+
+    if not os.path.isfile(pred_np_2048):
+        fake_videos, blur_degrees = load_videos_from_folder(fake_match_dir, match_sampled_pair_file_ori)
+        np.save(pred_np_2048, fake_videos.astype(np.float32))
+    else:
+        fake_videos = np.load(pred_np_2048).astype(np.float32)
+
+    real_tensor = convert_to_tensor(real_videos)
+    fake_tensor = convert_to_tensor(fake_videos)
+    blur_degrees = np.load(gt_np_2048_bd).astype(np.float32)
+
+    result['fvd'] = calculate_fvd(real_tensor, fake_tensor, device, method='styleganv', only_final=only_final)
+    with open(metric_log, "w") as f:
+        json.dump(result, f, indent=4)
+
+    start = time.time()
+    result['ssim'] = calculate_ssim(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
+    result['psnr'] = calculate_psnr(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
+    result['lpips'] = calculate_lpips(real_tensor, fake_tensor, device, only_final=only_final, blur_degrees=blur_degrees)
+    result['ssim_final'] = np.mean(result['ssim']['value'])
+    result['psnr_final'] = np.mean(result['psnr']['value'])
+    result['lpips_final'] = np.mean(result['lpips']['value'])
+    print(json.dumps(result, indent=4))
+    with open(metric_log, "w") as f:
+        json.dump(result, f, indent=4)
+
+    result['ssim_vertical'] = calculate_ssim_vertical(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
+    result['psnr_vertical'] = calculate_psnr_vertical(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
+    result['lpips_vertical'] = calculate_lpips_vertical(real_tensor, fake_tensor, device, only_final=only_final, blur_degrees=blur_degrees)
+    result['ssim_vertical_final'] = np.mean(result['ssim_vertical']['value'])
+    result['psnr_vertical_final'] = np.mean(result['psnr_vertical']['value'])
+    result['lpips_vertical_final'] = np.mean(result['lpips_vertical']['value'])
+
+    print(json.dumps(result, indent=4))
+    with open(metric_log, "w") as f:
+        json.dump(result, f, indent=4)
+
+    end_smi = time.time()
+    elapsed = end_smi - start
+    print(f"Similarity took {elapsed:.2f} seconds")
+
+    print("Calculating FID...")
+    match_sampled_pair_file = match_sampled_pair_file_ori.loc[match_sampled_pair_file_ori["blur_degree"] <= threshold]
+    match_sampled_pair_file = match_sampled_pair_file.sample(n=sample_num_frame, random_state=42)
+    gt_dir_list = list(match_sampled_pair_file["gt_path"])
+    pred_dir_list = list(match_sampled_pair_file["pred_path"])
+
+    start = time.time()
+    metric = FID(gt_dir_list, pred_dir_list, device)
+    fid = metric.compute(num_samples=sample_num_frame)
+    result['fid'] = fid
+    with open(metric_log, "w") as f:
+        json.dump(result, f, indent=4)
+    #
+    end_fid = time.time()
+    elapsed = end_fid - start
+    print(f"FID took {elapsed:.2f} seconds")
+
 
 if __name__ == "__main__":
     layers = ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14",
@@ -112,19 +175,19 @@ if __name__ == "__main__":
     generator = torch.Generator(device).manual_seed(8)
 
     blur_data_path = "/home/compu/jiamu/SVD_Xtend/image_process/blur_data5.csv"
-    ckp_v = 300000
+    ckp_v = 400000
     version = "output0701"
     num_frame = 11
     output_dir = f"/ssd2/AMC_zstack_2_patches/output_for_metrics/{version}"
     os.makedirs(output_dir, exist_ok=True)
     match_sampled_2048_path = f"{output_dir}/match_sampled_{sample_num}.csv"
-    match_sampled_pair_path = f"{output_dir}/match_sampled_pair_{ckp_v}.csv"
+    match_sampled_pair_path = f"{output_dir}/Pred_match/match_sampled_pair_{ckp_v}.csv"
     pretrained_model_path = f"/ssd2/AMC_zstack_2_patches/{version}/checkpoint-{ckp_v}"
 
     gt_np_2048 = f"{output_dir}/real_videos.npy"
     gt_np_2048_bd = f"{output_dir}/real_videos_blur_degree.npy"
-    pred_np_2048 = f"{output_dir}/pred_videos_{ckp_v}.npy"
-    metric_log = f"{output_dir}/log_{ckp_v}.json"
+    pred_np_2048 = f"{output_dir}/Pred_match/pred_videos_{ckp_v}.npy"
+    metric_log = f"{output_dir}/Pred_match/log_{ckp_v}.json"
 
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
         pretrained_model_path,
@@ -236,73 +299,19 @@ if __name__ == "__main__":
     elapsed = end - start
     print(f"Match pred Inference took {elapsed:.2f} seconds")
 
-    print("Calculating metrics for FVD...")
-    result = {}
-    match_sampled_pair_file_ori = pd.read_csv(match_sampled_pair_path)
-    if not os.path.isfile(gt_np_2048):
-        real_videos, blur_degrees = load_videos_from_folder(gt_dir, match_sampled_pair_file_ori)
-        np.save(gt_np_2048, real_videos.astype(np.float32))
-        np.save(gt_np_2048_bd, blur_degrees.astype(np.float32))
-    else:
-        real_videos = np.load(gt_np_2048).astype(np.float32)
-
-    if not os.path.isfile(pred_np_2048):
-        fake_videos, blur_degrees = load_videos_from_folder(fake_match_dir, match_sampled_pair_file_ori)
-        np.save(pred_np_2048, fake_videos.astype(np.float32))
-    else:
-        fake_videos = np.load(pred_np_2048).astype(np.float32)
-
-    real_tensor = convert_to_tensor(real_videos)
-    fake_tensor = convert_to_tensor(fake_videos)
-    blur_degrees = np.load(gt_np_2048_bd).astype(np.float32)
-
-    only_final = True
-    result['fvd'] = calculate_fvd(real_tensor, fake_tensor, device, method='styleganv', only_final=only_final)
-    with open(metric_log, "w") as f:
-        json.dump(result, f, indent=4)
-
-    start = time.time()
-    result['ssim'] = calculate_ssim(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
-    result['psnr'] = calculate_psnr(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
-    result['lpips'] = calculate_lpips(real_tensor, fake_tensor, device, only_final=only_final, blur_degrees=blur_degrees)
-    result['ssim_final'] = np.mean(result['ssim']['value'])
-    result['psnr_final'] = np.mean(result['psnr']['value'])
-    result['lpips_final'] = np.mean(result['lpips']['value'])
-
-    result['ssim_vertical'] = calculate_ssim_vertical(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
-    result['psnr_vertical'] = calculate_psnr_vertical(real_tensor, fake_tensor, only_final=only_final, blur_degrees=blur_degrees)
-    result['lpips_vertical'] = calculate_lpips_vertical(real_tensor, fake_tensor, device, only_final=only_final, blur_degrees=blur_degrees)
-    result['ssim_vertical_final'] = np.mean(result['ssim_vertical']['value'])
-    result['psnr_vertical_final'] = np.mean(result['psnr_vertical']['value'])
-    result['lpips_vertical_final'] = np.mean(result['lpips_vertical']['value'])
-
-    print(json.dumps(result, indent=4))
-    with open(metric_log, "w") as f:
-        json.dump(result, f, indent=4)
-
-    end_smi = time.time()
-    elapsed = end_smi - start
-    print(f"Similarity took {elapsed:.2f} seconds")
+    calculate_metrics(match_sampled_pair_path,
+                      gt_np_2048,
+                      gt_np_2048_bd,
+                      gt_dir,
+                      pred_np_2048,
+                      fake_match_dir,
+                      metric_log,
+                      device,
+                      threshold=0.2,
+                      only_final=True,
+                      sample_num_frame=10000)
 
 
-    print("Calculating FID...")
-
-    match_sampled_pair_file = match_sampled_pair_file_ori.loc[match_sampled_pair_file_ori["blur_degree"] <= 0.2]
-    match_sampled_pair_file = match_sampled_pair_file.sample(n=sample_num_frame, random_state=42)
-    gt_dir_list = list(match_sampled_pair_file["gt_path"])
-    pred_dir_list = list(match_sampled_pair_file["pred_path"])
-
-    start = time.time()
-
-    metric = FID(gt_dir_list, pred_dir_list, device)
-    fid = metric.compute(num_samples=sample_num_frame)
-    result['fid'] = fid
-    with open(metric_log, "w") as f:
-        json.dump(result, f, indent=4)
-    #
-    end_fid = time.time()
-    elapsed = end_fid - start
-    print(f"FID took {elapsed:.2f} seconds")
 
 
 
