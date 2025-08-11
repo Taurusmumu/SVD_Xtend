@@ -54,7 +54,7 @@ def experiment_config_parser():
 
     parser.add_argument("--resume_from_checkpoint",
                         help="Pass name of checkpoint folder to resume training from",
-                        default=None,
+                        default="checkpoint_59000",
                         type=str,
                         metavar="resume_from_checkpoint")
 
@@ -86,7 +86,7 @@ def experiment_config_parser():
 
     parser.add_argument("--path_to_save_gens",
                         help="Folder you want to store the testing generations througout training",
-                        default="/ssd2/AMC_zstack_2_patches/vae_0808/gen",
+                        default="/ssd2/AMC_zstack_2_patches/vae_0809/gen",
                         type=str)
 
     parser.add_argument("--image_size",
@@ -487,17 +487,16 @@ def main():
                 ### Not ideal as we may have some random transforms on these images, but its close enough ###
                 ### If our batch size is smaller than how many we want to generate, we just will take whatever ###
                 ### is in the batch size to keep this simple ###
-                    images_to_plot = pixel_values[msk]
+                    images_to_plot = pixel_values.detach()[msk]
                 else:
                     images_to_plot = val_images
 
-                model.eval()
-
-                with torch.no_grad():
-                    reconstructions = model(images_to_plot)["sample"]
+                # model.eval()
+                # with torch.no_grad():
+                #     reconstructions = model(images_to_plot)["sample"]
 
                 save_orig_and_generated_gifs(original_images=images_to_plot,
-                                               generated_image_tensors=reconstructions.detach(),
+                                               generated_image_tensors=reconstructions.detach()[msk],
                                                path_to_save_folder=args.path_to_save_gens,
                                                step=global_step,
                                                accelerator=accelerator)
