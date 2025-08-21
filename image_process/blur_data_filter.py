@@ -138,6 +138,6 @@ if __name__ == "__main__":
         blur_data_df[layer] = blur_scores_norm[:, i]
 
 
-    blur_data_df.to_csv("./blur_data5_full_clean.csv", index=False)
+    blur_data_df.to_csv("./blur_data5.csv", index=False)
 
 
