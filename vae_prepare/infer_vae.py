@@ -15,14 +15,12 @@ from diffusers.optimization import get_scheduler
 import lpips
 from dataloader import AMCDataset
 from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
-from utils import load_val_images, save_orig_and_generated_images, count_num_params, save_orig_and_generated_gifs
-from modules import VAE, LDMConfig, PatchGAN, init_weights
-from modules import LPIPS as mylpips
+from utils import save_orig_and_generated_images, count_num_params, save_orig_and_generated_gifs
 from einops import rearrange
 
 if __name__ == "__main__":
     device = "cuda:0"
-    model_weight_path = "/ssd2/AMC_zstack_2_patches/vae_0809/VAETrainer/checkpoint_57000/pytorch_model.bin"
+    model_weight_path = "/ssd2/AMC_zstack_2_patches/vae_0809/VAETrainer/checkpoint_287500/pytorch_model.bin"
     model = AutoencoderKLTemporalDecoder.from_pretrained(
         "stabilityai/stable-video-diffusion-img2vid",
         subfolder="vae", revision=None, variant="fp16")
@@ -34,8 +32,8 @@ if __name__ == "__main__":
                             batch_size=1,
                             num_workers=0,
                             shuffle=False)
-    # state_dict = torch.load(model_weight_path, map_location="cpu")
-    # model.load_state_dict(state_dict, strict=True)
+    state_dict = torch.load(model_weight_path, map_location="cpu")
+    model.load_state_dict(state_dict, strict=True)
     model.to(device)
     model.eval()
 
@@ -44,7 +42,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             pixel_values = batch["pixel_values"].to(device)
             pixel_values = rearrange(pixel_values, "b f c h w -> (b f) c h w")
-            loss_msk = torch.stack(batch["blur_bool"], dim=0)
+            loss_msk = torch.stack(batch["mask"], dim=0)
             msk = loss_msk.squeeze()
 
             posterior = model.encode(pixel_values).latent_dist
@@ -53,7 +51,7 @@ if __name__ == "__main__":
 
             save_orig_and_generated_gifs(original_images=pixel_values.detach()[msk],
                                          generated_image_tensors=reconstructions.detach()[msk],
-                                         path_to_save_folder="/ssd2/AMC_zstack_2_patches/vae_0809/gen",
+                                         path_to_save_folder="/ssd2/AMC_zstack_2_patches/vae_0826/gen",
                                          step=i)
         if i == 5:
             break

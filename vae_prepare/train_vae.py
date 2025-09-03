@@ -1,27 +1,25 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
+os.environ["CUDA_VISIBLE_DEVICES"] = '4,5,6,7'
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 import argparse
-import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from tqdm import tqdm
 from diffusers.optimization import get_scheduler
 import lpips
 from dataloader import AMCDataset
-from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
-from utils import load_val_images, save_orig_and_generated_images, count_num_params, save_orig_and_generated_gifs
-from modules import VAE, LDMConfig, PatchGAN, init_weights
+from diffusers import AutoencoderKLTemporalDecoder
+from utils import count_num_params, save_orig_and_generated_gifs
+from modules import PatchGAN, init_weights
 from modules import LPIPS as mylpips
 from einops import rearrange
-# from dataset import get_dataset
 
-
+# OMP_NUM_THREADS=4  python -m torch.distributed.run --nproc_per_node=1 --master_port=33371 train_vae.py
 ### Load Arguments ###
 def experiment_config_parser():
     parser = argparse.ArgumentParser(description="Experiment Configuration")
@@ -36,7 +34,7 @@ def experiment_config_parser():
     parser.add_argument("--wandb_run_name",
                         # required=True,
                         type=str,
-                        default="vae_0809",
+                        default="vae_0903",
                         metavar="wandb_run_name")
 
     parser.add_argument("--working_directory",
@@ -44,7 +42,7 @@ def experiment_config_parser():
                         folder labeled by the experiment name",
                         # required=True,
                         type=str,
-                        default="/ssd2/AMC_zstack_2_patches/vae_0809",
+                        default="/ssd2/AMC_zstack_2_patches/vae_0903",
                         metavar="working_directory")
 
     parser.add_argument("--log_wandb",
@@ -54,7 +52,7 @@ def experiment_config_parser():
 
     parser.add_argument("--resume_from_checkpoint",
                         help="Pass name of checkpoint folder to resume training from",
-                        default="checkpoint_59000",
+                        default=None,
                         type=str,
                         metavar="resume_from_checkpoint")
 
@@ -72,21 +70,15 @@ def experiment_config_parser():
                         type=str,
                         metavar="model_config")
 
-    # parser.add_argument("--dataset",
-    #                     help="What dataset do you want to train on?",
-    #                     choices=("conceptual_captions", "imagenet", "coco", "celeba", "celebahq", "birds", "ffhd"),
-    #                     required=True,
-    #                     type=str)
-
     parser.add_argument("--path_to_dataset",
                         help="Root directory of dataset",
-                        default='/ssd2/AMC_zstack_2_patches/pngs_mid/',
+                        default='/ssd1/AMC_zstack_2_patches_warp/pngs_mid/',
                         # required=True,
                         type=str)
 
     parser.add_argument("--path_to_save_gens",
                         help="Folder you want to store the testing generations througout training",
-                        default="/ssd2/AMC_zstack_2_patches/vae_0809/gen",
+                        default="/ssd2/AMC_zstack_2_patches/vae_0903/gen",
                         type=str)
 
     parser.add_argument("--image_size",
@@ -128,6 +120,13 @@ def main():
             args.pretrained_model_name_or_path,
         subfolder="vae", revision=None, variant="fp16")
     model.requires_grad_(True)
+    for param in model.encoder.parameters():
+        param.requires_grad = False
+    for param in model.decoder.parameters():
+        assert param.requires_grad == True, "Decoder parameter is not trainable"
+
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+
     # latent_res = (config.img_size // (len(config.vae_channels_per_block) - 1) ** 2)
     # accelerator.print(f"LATENT SPACE DIMENSIONS: {config.latent_channels, latent_res, latent_res}")
 
@@ -160,12 +159,15 @@ def main():
             discriminator = nn.SyncBatchNorm.convert_sync_batchnorm(discriminator)
 
     ### Print Out Number of Trainable Parameters ###
+    # Count the trainable parameters
+    num_trainable_params = sum(p.numel() for p in trainable_params)
+    print(f"Number of trainable parameters: {num_trainable_params}")
     accelerator.print(f"NUMBER OF VAE PARAMETERS: {count_num_params(model)}")
     if use_disc:
         accelerator.print(f"NUMBER OF DISC PARAMETERS: {count_num_params(discriminator)}")
 
     ### Load Optimizers ###
-    optimizer = torch.optim.AdamW(model.parameters(),
+    optimizer = torch.optim.AdamW(trainable_params,
                                   lr=training_config["learning_rate"],
                                   betas=(training_config["optimizer_beta1"], training_config["optimizer_beta2"]),
                                   weight_decay=training_config["optimizer_weight_decay"])
@@ -176,6 +178,7 @@ def main():
                                            betas=(training_config["optimizer_beta1"], training_config["optimizer_beta2"]),
                                            weight_decay=training_config["optimizer_weight_decay"])
 
+    bce_loss = nn.BCELoss()
     ### Get DataLoader ###
     mini_batchsize = training_config["per_gpu_batch_size"] // training_config["gradient_accumulations_steps"]
     # dataset = get_dataset(dataset=args.dataset,
@@ -232,20 +235,12 @@ def main():
     if use_lpips:
         lpips_loss_fn = accelerator.prepare(lpips_loss_fn)
 
-    ### Load Validation Images (If we have a folder of them) ###
-    val_images = None
-    if training_config["val_img_folder_path"] is not None:
-        val_images = load_val_images(path_to_image_folder=training_config["val_img_folder_path"],
-                                     img_size=args.image_size,
-                                     device=accelerator.device,
-                                     dtype=accelerator.mixed_precision)
-
     ### Initialize Variables to Accumulate ###
     model_log = {"loss": 0,
                  "perceptual_loss": 0,
                  "reconstruction_loss": 0,
                  "lpips_loss": 0,
-                 "kl_loss": 0,
+                 # "kl_loss": 0,
                  "generator_loss": 0,
                  "adp_weight": 0}
 
@@ -253,11 +248,9 @@ def main():
                 "logits_real": 0,
                 "logits_fake": 0}
 
-
     ### Quick Helper to Rest Logs ###
     def reset_log(log):
         return {key: 0 for (key, _) in log.items()}
-
 
     ### Resume From Checkpoint ###
     if args.resume_from_checkpoint is not None:
@@ -294,38 +287,40 @@ def main():
             else:
                 generator_step = False
 
-                ### Pass Through Model ###
-        # model_outputs = model(pixel_values, num_frames=args.num_frames)
-        posterior = model.module.encode(pixel_values).latent_dist
-        z = posterior.mode()
-        reconstructions = model.module.decode(z, num_frames=args.num_frames).sample
-        # posterior = model.encode(pixel_values).latent_dist
-        # z = posterior.mode()
-        # reconstructions = model.decode(z, num_frames=args.num_frames).sample
-        # reconstructions = model_outputs["sample"]
-        loss_msk = torch.stack(batch["blur_bool"], dim=0)
-        msk = loss_msk.squeeze()
-        # loss_msk = loss_msk.permute(1, 0)
-        loss_msk = loss_msk[:, :, None, None]
-        loss_msk_exp = loss_msk.expand(-1, reconstructions.size(1), reconstructions.size(2), reconstructions.size(3))
-
         if generator_step:
+            discriminator.eval()
+            model.train()
             optimizer.zero_grad()
+
+            with torch.no_grad():
+                posterior = model.module.encode(pixel_values).latent_dist
+                z = posterior.mode()
+            reconstructions = model.module.decode(z, num_frames=args.num_frames).sample
+            # loss_msk = torch.stack(batch["mask"], dim=0)
+            # msk = loss_msk.squeeze()
+            # # loss_msk = loss_msk.permute(1, 0)
+            # loss_msk = loss_msk[:, :, None, None]
+            # loss_msk_exp = loss_msk.expand(-1, reconstructions.size(1), reconstructions.size(2),
+            #                                reconstructions.size(3))
+
             # with torch.no_grad():
             with accelerator.accumulate(model):
                 ### Reconstruction Loss ###
                 if training_config["reconstruction_loss_fn"] == "l1":
-                    reconstruction_loss = F.l1_loss(pixel_values, reconstructions, reduction='none')
+                    reconstruction_loss = F.l1_loss(pixel_values, reconstructions, reduction='none').mean()
                 elif training_config["reconstruction_loss_fn"] == "l2":
-                    reconstruction_loss = F.mse_loss(pixel_values, reconstructions, reduction='none')
+                    reconstruction_loss = F.mse_loss(pixel_values, reconstructions, reduction='none').mean()
                 else:
                     raise ValueError(f"{training_config['reconstruction_loss_fn']} is not a Valid Reconstruction Loss")
 
-                reconstruction_loss = torch.sum(reconstruction_loss[loss_msk_exp])/ torch.sum(torch.ones_like(loss_msk_exp))
+                # reconstruction_loss = torch.sum(reconstruction_loss[loss_msk_exp]) / torch.sum(
+                #     torch.ones_like(loss_msk_exp))
                 ### Perceptual Loss ###
                 lpips_loss = torch.zeros(size=(), device=pixel_values.device)
+                # if use_lpips:
+                #     lpips_loss = lpips_loss_fn(reconstructions, pixel_values)[loss_msk].mean()
                 if use_lpips:
-                    lpips_loss = lpips_loss_fn(reconstructions, pixel_values)[loss_msk].mean()
+                    lpips_loss = lpips_loss_fn(reconstructions, pixel_values).mean()
 
                 ### Add Together Losses ###
                 perceptual_loss = reconstruction_loss + training_config["lpips_weight"] * lpips_loss
@@ -340,6 +335,10 @@ def main():
                     gen_loss = -1 * discriminator(
                         rearrange(reconstructions, "(b f) c h w -> b c f h w", f=args.num_frames)
                     ).mean()
+                    # fake = discriminator(rearrange(reconstructions, "(b f) c h w -> b c f h w", b=1))
+                    # gen_loss = bce_loss(nn.functional.sigmoid(fake), torch.ones_like(fake))
+
+
                     last_layer = accelerator.unwrap_model(model).decoder.conv_out.weight
                     norm_grad_wrt_perceptual_loss = torch.autograd.grad(outputs=loss,
                                                                         inputs=last_layer,
@@ -356,8 +355,9 @@ def main():
                 ### Compute KL Loss ###
                 # kl_loss = model_outputs["kl_loss"].mean()
                 # loss = loss + kl_loss * training_config["kl_weight"]
-                kl_loss = posterior.kl()[msk].mean()
-                loss = loss + kl_loss * training_config["kl_weight"]
+                # kl_loss = posterior.kl()[msk].mean()
+                # kl_loss = posterior.kl().mean()
+                # loss = loss + kl_loss * training_config["kl_weight"]
 
                 ### Update Model ###
                 accelerator.backward(loss)
@@ -373,7 +373,7 @@ def main():
                        "perceptual_loss": perceptual_loss,
                        "reconstruction_loss": reconstruction_loss,
                        "lpips_loss": lpips_loss,
-                       "kl_loss": kl_loss,
+                       # "kl_loss": kl_loss,
                        "generator_loss": gen_loss,
                        "adp_weight": adaptive_weight}
 
@@ -381,16 +381,30 @@ def main():
                 for key, value in log.items():
                     model_log[key] += value.mean() / training_config["gradient_accumulations_steps"]
         else:
+            discriminator.train()
+            model.eval()
             disc_optimizer.zero_grad()
 
-            with accelerator.accumulate(discriminator): # ?
-            ### Hinge Loss ###
+            with torch.no_grad():
+                posterior = model.module.encode(pixel_values).latent_dist
+                z = posterior.mode()
+            reconstructions = model.module.decode(z, num_frames=args.num_frames).sample
+
+            # loss_msk = torch.stack(batch["mask"], dim=0)
+            # msk = loss_msk.squeeze()
+
+            with accelerator.accumulate(discriminator):  # ?
+                ### Hinge Loss ###
                 # real = discriminator(pixel_values[msk])
                 # fake = discriminator(reconstructions[msk])
-                #TODO: It will not work when batch size is not 1
-                real = discriminator(rearrange(pixel_values[msk], "(b f) c h w -> b c f h w", b=1))
-                fake = discriminator(rearrange(reconstructions[msk], "(b f) c h w -> b c f h w", b=1))
+                # TODO: It will not work when batch size is not 1
+                # real = discriminator(rearrange(pixel_values[msk], "(b f) c h w -> b c f h w", b=1))
+                real = discriminator(rearrange(pixel_values, "(b f) c h w -> b c f h w", b=1))
+                fake = discriminator(rearrange(reconstructions, "(b f) c h w -> b c f h w", b=1))
                 loss = (F.relu(1 + fake) + F.relu(1 - real)).mean()
+                # loss_real = bce_loss(nn.functional.sigmoid(real), torch.ones_like(real))
+                # loss_fake = bce_loss(nn.functional.sigmoid(fake), torch.zeros_like(fake))
+                # loss = loss_real + loss_fake
 
                 ### Update Discriminator Model ###
                 accelerator.backward(loss)
@@ -410,7 +424,7 @@ def main():
                     disc_log[key] += value.mean() / training_config["gradient_accumulations_steps"]
 
         if accelerator.sync_gradients:
-        ### If we updated the VAE ###
+            ### If we updated the VAE ###
             if model_toggle or not train_disc:
 
                 ## Gather Across GPUs ###
@@ -444,7 +458,7 @@ def main():
                 model_log = reset_log(model_log)
                 model_log.pop("lr")
 
-        ### If we updated the Discriminator ###
+            ### If we updated the Discriminator ###
             else:
                 ## Gather Across GPUs ###
                 # disc_log = {key: accelerator.gather_for_metrics(value).mean().item() for key, value in disc_log.items()}
@@ -482,24 +496,12 @@ def main():
 
         if global_step % training_config["val_generation_freq"] == 0:
             if accelerator.is_main_process:
-                if val_images is None:
-                ### If we dont have a val images folder, just use the last batch as our validation images ###
-                ### Not ideal as we may have some random transforms on these images, but its close enough ###
-                ### If our batch size is smaller than how many we want to generate, we just will take whatever ###
-                ### is in the batch size to keep this simple ###
-                    images_to_plot = pixel_values.detach()[msk]
-                else:
-                    images_to_plot = val_images
-
-                # model.eval()
-                # with torch.no_grad():
-                #     reconstructions = model(images_to_plot)["sample"]
-
+                images_to_plot = pixel_values.detach()
                 save_orig_and_generated_gifs(original_images=images_to_plot,
-                                               generated_image_tensors=reconstructions.detach()[msk],
-                                               path_to_save_folder=args.path_to_save_gens,
-                                               step=global_step,
-                                               accelerator=accelerator)
+                                             generated_image_tensors=reconstructions.detach(),
+                                             path_to_save_folder=args.path_to_save_gens,
+                                             step=global_step,
+                                             accelerator=accelerator)
 
                 model.train()
             accelerator.wait_for_everyone()

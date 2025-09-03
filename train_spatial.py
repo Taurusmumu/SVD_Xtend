@@ -16,21 +16,23 @@
 
 """Script to fine-tune Stable Video Diffusion."""
 import argparse
-import random
 import logging
-import math
 import os
-import cv2
+import random
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import List
+import cv2
+import math
 
+from dataloader import AMCDataset
+os.environ["CUDA_VISIBLE_DEVICES"] = '4,5,6,7'
 import accelerate
 import numpy as np
 import PIL
-from PIL import Image, ImageDraw
+from PIL import Image
 import torch
-import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.utils.data import RandomSampler
 import transformers
@@ -45,13 +47,12 @@ from einops import rearrange
 
 import diffusers
 from diffusers import StableVideoDiffusionPipeline
-from diffusers.models.lora import LoRALinearLayer
-from diffusers import AutoencoderKLTemporalDecoder, EulerDiscreteScheduler, UNetSpatioTemporalConditionModel
-from diffusers.image_processor import VaeImageProcessor
+from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
+# from src.Unet import UNetSpatioTemporalConditionModelWithEmbedder
 
 from torch.utils.data import Dataset
 
@@ -66,54 +67,6 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
     """Draws samples from an lognormal distribution."""
     u = torch.rand(shape, dtype=dtype, device=device) * (1 - 2e-7) + 1e-7
     return torch.distributions.Normal(loc, scale).icdf(u).exp()
-
-
-class DummyDatasetImage(Dataset):
-    def __init__(self, base_folder: str, num_samples=18256, width=256, height=256):
-        """
-        Args:
-            num_samples (int): Number of samples in the dataset.
-            channels (int): Number of channels, default is 3 for RGB.
-        """
-        self.num_samples = num_samples
-        # Define the path to the folder containing video frames
-        self.base_path = os.listdir(base_folder)
-        self.channels = 3
-        self.width = width
-        self.height = height
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        """
-        Args:
-            idx (int): Index of the sample to return.
-
-        Returns:
-            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
-        """
-        # Randomly select a folder (representing a video) from the base folder
-        chosen_img = self.base_path[idx]
-        frame_path = os.path.join(self.base_folder, chosen_img)
-
-        with Image.open(frame_path) as img:
-            # Resize the image and convert it to a tensor
-            img_resized = img.resize((self.width, self.height))
-            img_tensor = torch.from_numpy(np.array(img_resized)).float()
-
-            # Normalize the image by scaling pixel values to [-1, 1]
-            img_normalized = img_tensor / 127.5 - 1
-
-            # Rearrange channels if necessary
-            if self.channels == 3:
-                img_normalized = img_normalized.permute(
-                    2, 0, 1)  # For RGB images
-            elif self.channels == 1:
-                img_normalized = img_normalized.mean(
-                    dim=2, keepdim=True)  # For grayscale images
-
-        return {'pixel_values': img_normalized}
 
 
 class DummyDataset(Dataset):
@@ -347,7 +300,7 @@ def parse_args():
     )
     parser.add_argument(
         "--base_folder",
-        default="/ssd2/AMC_zstack_2_patches/pngs_mid/24S%20048630;E;10;;FA0824;1_241226_161645/z00",
+        default='/ssd1/AMC_zstack_2_patches_warp/pngs_mid/',
         required=False,
         type=str,
     )
@@ -355,6 +308,13 @@ def parse_args():
         "--pretrained_model_name_or_path",
         type=str,
         default="stabilityai/stable-video-diffusion-img2vid-xt",
+        required=False,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--pretrained_vae_path",
+        type=str,
+        default="/ssd2/AMC_zstack_2_patches/vae_0827 (blur + clear)/VAETrainer/checkpoint_100000/pytorch_model.bin",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -368,7 +328,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=25,
+        default=1,
     )
     parser.add_argument(
         "--width",
@@ -383,7 +343,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=1,
+        default=4,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -398,19 +358,19 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs",
+        default='/ssd2/AMC_zstack_2_patches/output_spatial/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
-        "--seed", type=int, default=888, help="A seed for reproducible training."
+        "--seed", type=int, default=42, help="A seed for reproducible training."
     )
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=1,
+        default=12,
         help="Batch size (per device) for the training dataloader.",
     )
-    parser.add_argument("--num_train_epochs", type=int, default=1)
+    parser.add_argument("--num_train_epochs", type=int, default=10)
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -431,7 +391,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-4,
+        default=5e-5,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -452,13 +412,13 @@ def parse_args():
     parser.add_argument(
         "--lr_warmup_steps",
         type=int,
-        default=500,
+        default=10000,
         help="Number of steps for the warmup in the lr scheduler.",
     )
     parser.add_argument(
         "--conditioning_dropout_prob",
         type=float,
-        default=0.1,
+        default=None,
         help="Conditioning dropout probability. Drops out the conditionings (image and edit prompt) used in training InstructPix2Pix. See section 3.2.1 in the paper: https://arxiv.org/abs/2211.09800.",
     )
     parser.add_argument(
@@ -490,7 +450,7 @@ def parse_args():
     parser.add_argument(
         "--num_workers",
         type=int,
-        default=8,
+        default=0,
         help=(
             "Number of subprocesses to use for data loading. 0 means that the data will be loaded in the main process."
         ),
@@ -574,7 +534,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=500,
+        default=1000,
         help=(
             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
             " training using `--resume_from_checkpoint`."
@@ -583,13 +543,14 @@ def parse_args():
     parser.add_argument(
         "--checkpoints_total_limit",
         type=int,
-        default=20,
+        default=30,
         help=("Max number of checkpoints to store."),
     )
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
         default=None,
+        # default='checkpoint-585000',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -661,6 +622,9 @@ def main():
             raise ImportError(
                 "Make sure to install wandb if you want to use it for logging during training.")
         import wandb
+        wandb.login(
+            key="928c7cd0eba71d0831bcf8c85a2e47b0086340e6"
+        )
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -699,17 +663,19 @@ def main():
     )
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
+
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
         args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
         subfolder="unet",
         low_cpu_mem_usage=True,
         variant="fp16"
     )
-
     # Freeze vae and image_encoder
+    vae_state_dict = torch.load(args.pretrained_vae_path, map_location="cpu")
+    vae.load_state_dict(vae_state_dict, strict=True)
     vae.requires_grad_(False)
     image_encoder.requires_grad_(False)
-    unet.requires_grad_(False)
+    unet.requires_grad_(True)
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
@@ -809,13 +775,15 @@ def main():
 
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
     for name, param in unet.named_parameters():
-        if 'temporal_transformer_block' in name:
+        # if 'temporal_transformer_block' in name or 'temporal_res_block' in name:
+        if 'temporal_transformer_block' in name: # TODO
             parameters_list.append(param)
             param.requires_grad = True
         else:
             param.requires_grad = False
+
     optimizer = optimizer_cls(
-        parameters_list,
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -836,8 +804,8 @@ def main():
 
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
-
-    train_dataset = DummyDataset(args.base_folder, width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = AMCDataset(data_dir=args.base_folder, split="train", img_size=args.width, sample_frames=args.num_frames)
+    # train_dataset = DummyDataset(args.base_folder, width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -925,29 +893,29 @@ def main():
         image_embeddings = image_encoder(pixel_values).image_embeds
         return image_embeddings
 
-    def _get_add_time_ids(
-            fps,
-            motion_bucket_id,
-            noise_aug_strength,
-            dtype,
-            batch_size,
-    ):
-        add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
+    # def _get_add_time_ids(
+    #         fps,
+    #         motion_bucket_id,
+    #         noise_aug_strength,
+    #         dtype,
+    #         batch_size,
+    # ):
+    #     add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
+    #
+    #     passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+    #                            len(add_time_ids)
+    #     expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+    #
+    #     if expected_add_embed_dim != passed_add_embed_dim:
+    #         raise ValueError(
+    #             f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
+    #         )
+    #
+    #     add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
+    #     add_time_ids = add_time_ids.repeat(batch_size, 1)
+    #     return add_time_ids
 
-        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
-                               len(add_time_ids)
-        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
-        if expected_add_embed_dim != passed_add_embed_dim:
-            raise ValueError(
-                f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
-            )
-
-        add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
-        add_time_ids = add_time_ids.repeat(batch_size, 1)
-        return add_time_ids
-
-    # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -993,21 +961,11 @@ def main():
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
-
                 latents = tensor_to_vae_latent(pixel_values, vae)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
-
-                cond_sigmas = rand_log_normal(shape=[bsz, ], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
-                cond_sigmas = cond_sigmas[:, None, None, None, None]
-                conditional_pixel_values = \
-                    torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
-                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
-                conditional_latents = conditional_latents / vae.config.scaling_factor
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
@@ -1021,55 +979,9 @@ def main():
 
                 inp_noisy_latents = noisy_latents / ((sigmas ** 2 + 1) ** 0.5)
 
-                # Get the text embedding for conditioning.
-                encoder_hidden_states = encode_image(
-                    pixel_values[:, 0, :, :, :].float())
-
-                # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
-                # However, I am unable to fully align with the calculation method of the motion score,
-                # so I adopted this approach. The same applies to the 'fps' (frames per second).
-                added_time_ids = _get_add_time_ids(
-                    7,  # fixed
-                    127,  # motion_bucket_id = 127, fixed
-                    noise_aug_strength,  # noise_aug_strength == cond_sigmas
-                    encoder_hidden_states.dtype,
-                    bsz,
-                )
-                added_time_ids = added_time_ids.to(latents.device)
-
-                # Conditioning dropout to support classifier-free guidance during inference. For more details
-                # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
-                if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
-                    # Sample masks for the edit prompts.
-                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
-                    # Final text conditioning.
-                    null_conditioning = torch.zeros_like(encoder_hidden_states)
-                    encoder_hidden_states = torch.where(
-                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                    # Sample masks for the original images.
-                    image_mask_dtype = conditional_latents.dtype
-                    image_mask = 1 - (
-                            (random_p >= args.conditioning_dropout_prob).to(
-                                image_mask_dtype)
-                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
-                    )
-                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                    # Final image conditioning.
-                    conditional_latents = image_mask * conditional_latents
-
-                # Concatenate the `conditional_latents` with the `noisy_latents`.
-                conditional_latents = conditional_latents.unsqueeze(
-                    1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                inp_noisy_latents = torch.cat(
-                    [inp_noisy_latents, conditional_latents], dim=2)
-
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+                model_pred = unet(inp_noisy_latents, timesteps).sample
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)
@@ -1085,6 +997,7 @@ def main():
                 )
                 loss = loss.mean()
 
+
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
                     loss.repeat(args.per_gpu_batch_size)).mean()
@@ -1092,8 +1005,6 @@ def main():
 
                 # Backpropagate
                 accelerator.backward(loss)
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -1175,15 +1086,16 @@ def main():
                         with torch.autocast(
                                 str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
+                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png', 'patch_6570_17725_29207.png', 'patch_9993_29408_33490.png']
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image(val_arr[val_img_idx]),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
                                     decode_chunk_size=8,
-                                    motion_bucket_id=127,
+                                    motion_bucket_id=1,
                                     fps=7,
                                     noise_aug_strength=0.02,
                                     # generator=generator,
