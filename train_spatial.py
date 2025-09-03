@@ -416,12 +416,6 @@ def parse_args():
         help="Number of steps for the warmup in the lr scheduler.",
     )
     parser.add_argument(
-        "--conditioning_dropout_prob",
-        type=float,
-        default=None,
-        help="Conditioning dropout probability. Drops out the conditionings (image and edit prompt) used in training InstructPix2Pix. See section 3.2.1 in the paper: https://arxiv.org/abs/2211.09800.",
-    )
-    parser.add_argument(
         "--use_8bit_adam",
         action="store_true",
         help="Whether or not to use 8-bit Adam from bitsandbytes.",
@@ -1098,7 +1092,7 @@ def main():
                                     motion_bucket_id=1,
                                     fps=7,
                                     noise_aug_strength=0.02,
-                                    # generator=generator,
+                                    generator=generator,
                                 ).frames[0]
 
                                 out_file = os.path.join(
