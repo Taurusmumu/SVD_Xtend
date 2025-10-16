@@ -25,7 +25,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import List
 from dataloader import AMCDataset, AMC_TempAug_Dataset
-os.environ["CUDA_VISIBLE_DEVICES"] = '4,5,6,7'
+
+os.environ["CUDA_VISIBLE_DEVICES"] = '6,7'
 import accelerate
 import numpy as np
 import PIL
@@ -61,6 +62,7 @@ from src.unet_spatio_temporal_condition import UNetSpatioTemporalConditionModel
 # check_min_version("0.29.1")
 
 logger = get_logger(__name__, log_level="INFO")
+
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
@@ -156,7 +158,7 @@ def _gaussian(window_size: int, sigma):
     batch_size = sigma.shape[0]
 
     x = (torch.arange(window_size, device=sigma.device,
-         dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
+                      dtype=sigma.dtype) - window_size // 2).expand(batch_size, -1)
 
     if window_size % 2 == 0:
         x = x + 0.5
@@ -250,13 +252,6 @@ def parse_args():
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
-    # parser.add_argument(
-    #     "--pretrained_unet_path",
-    #     type=str,
-    #     default="/ssd2/AMC_zstack_2_patches/output0912_unet_lora/checkpoint_60000",
-    #     required=False,
-    #     help="Path to pretrained model or model identifier from huggingface.co/models.",
-    # )
     parser.add_argument(
         "--revision",
         type=str,
@@ -288,7 +283,7 @@ def parse_args():
     parser.add_argument(
         "--validation_steps",
         type=int,
-        default=1000,
+        default=500,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the text/image prompt"
             " multiple times: `args.num_validation_images`."
@@ -297,7 +292,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2/',
+        default='/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2_temp/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -306,7 +301,7 @@ def parse_args():
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=3,
+        default=4,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument("--num_train_epochs", type=int, default=10)
@@ -454,7 +449,7 @@ def parse_args():
     parser.add_argument(
         "--wandb_run_name",
         type=str,
-        default="output1015_unet_full_lora_v2",
+        default="output1015_unet_full_lora_v2_temp",
     )
     parser.add_argument(
         "--local_rank",
@@ -480,8 +475,8 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        # default=None,
-        default='checkpoint-30000',  # checkpoint-40000
+        default=None,
+        # default='checkpoint-30000',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -500,13 +495,13 @@ def parse_args():
         default=None,
         help="use weight for unet block",
     )
-    # parser.add_argument(
-    #     "--pretrain_unet_lora",
-    #     type=str,
-    #     # default="/ssd2/AMC_zstack_2_patches/output0912_unet_lora/checkpoint-60000/pytorch_lora_weights.safetensors",
-    #     default="/ssd2/AMC_zstack_2_patches/output0922_unet_full_lora32/checkpoint-40000/pytorch_lora_weights.safetensors",
-    #     help="use lora weight for unet block",
-    # )
+    parser.add_argument(
+        "--pretrain_unet_lora",
+        type=str,
+        # default="/ssd2/AMC_zstack_2_patches/output0912_unet_lora/checkpoint-60000/pytorch_lora_weights.safetensors",
+        default="/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2/checkpoint-40000/",
+        help="use lora weight for unet block",
+    )
     parser.add_argument(
         "--rank",
         type=int,
@@ -615,22 +610,20 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
-    # unet.load_attn_procs(args.pretrain_unet_lora)
+    unet.load_attn_procs(args.pretrain_unet_lora)
     # Freeze the unet parameters before adding adapters
     print("--- Initial state before loading full LoRA adapter ---")
     print(sum(p.numel() for p in unet.parameters() if p.requires_grad))
     for param in unet.parameters():
         param.requires_grad_(False)
 
-    unet_lora_config = LoraConfig(
-        r=args.rank,
-        lora_alpha=args.rank,
-        init_lora_weights="gaussian",
-        target_modules=['spatial_res_block.conv1', 'spatial_res_block.conv2', 'conv_in', 'conv_out', 'proj_in', 'proj_out', 'to_k', 'to_q', 'to_out.0', 'to_v'],
-        # target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-    )
-    lora_unet = get_peft_model(unet, unet_lora_config)
-    unet = lora_unet
+    # unet_lora_config = LoraConfig(
+    #     r=args.rank,
+    #     lora_alpha=args.rank,
+    #     init_lora_weights="gaussian",
+    #     # target_modules=['spatial_res_block.conv1', 'spatial_res_block.conv2', 'conv_in', 'conv_out', 'proj_in', 'proj_out', 'to_k', 'to_q', 'to_out.0', 'to_v'],
+    #     target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    # )
     # unet.add_adapter(unet_lora_config)
     # print("--- Initial state after loading full LoRA adapter ---")
     # print(sum(p.numel() for p in unet.parameters() if p.requires_grad))
@@ -638,17 +631,16 @@ def main():
     # for param in unet.parameters():
     #     param.requires_grad_(False)
 
-    # # # Now, selectively unfreeze ONLY the parameters in the temporal blocks
-    # for name, param in unet.named_parameters():
-    #     # Check if the parameter is part of a temporal block AND is a LoRA weight
-    #     if "temporal_transformer_blocks" in name and "lora" in name:
-    #         param.requires_grad = True
+    # # Now, selectively unfreeze ONLY the parameters in the temporal blocks
+    for name, param in unet.named_parameters():
+        # Check if the parameter is part of a temporal block AND is a LoRA weight
+        if "temporal_transformer_blocks" in name and "lora" in name:
+            param.requires_grad = True
 
     # print("\n--- After freezing spatial layers for second-stage tuning ---")
     # # This number should be significantly smaller than the one above
     # print(sum(p.numel() for p in unet.parameters() if p.requires_grad))
     unet.to(accelerator.device, dtype=weight_dtype)
-
 
     if args.mixed_precision == "fp16":
         # only upcast trainable parameters (LoRA) into fp32
@@ -683,6 +675,8 @@ def main():
             for i in range(len(models)):
                 # pop models so that they are not loaded again
                 model = models.pop()
+                # resume_lora_weight = os.path.join(input_dir, "pytorch_lora_weights.safetensors")
+                # model.load_attn_procs(resume_lora_weight)
 
                 # load diffusers style into model
                 load_model = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -705,8 +699,8 @@ def main():
 
     if args.scale_lr:
         args.learning_rate = (
-            args.learning_rate * args.gradient_accumulation_steps *
-            args.per_gpu_batch_size * accelerator.num_processes
+                args.learning_rate * args.gradient_accumulation_steps *
+                args.per_gpu_batch_size * accelerator.num_processes
         )
 
     # Initialize the optimizer
@@ -768,8 +762,8 @@ def main():
 
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
-    train_dataset = AMCDataset(data_dir=args.base_folder, split="train", img_size=args.width,
-                               sample_frames=args.num_frames)
+    train_dataset = AMC_TempAug_Dataset(data_dir=args.base_folder, split="train", img_size=args.width,
+                                        sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -817,7 +811,7 @@ def main():
 
     # Train!
     total_batch_size = args.per_gpu_batch_size * \
-        accelerator.num_processes * args.gradient_accumulation_steps
+                       accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
@@ -929,7 +923,7 @@ def main():
             resume_global_step = global_step * args.gradient_accumulation_steps
             first_epoch = global_step // num_update_steps_per_epoch
             resume_step = resume_global_step % (
-                num_update_steps_per_epoch * args.gradient_accumulation_steps)
+                    num_update_steps_per_epoch * args.gradient_accumulation_steps)
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, args.max_train_steps),
@@ -973,7 +967,7 @@ def main():
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                sigmas = rand_log_normal(shape=[bsz, ], loc=0.7, scale=1.6).to(latents.device)
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
@@ -981,7 +975,7 @@ def main():
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
+                inp_noisy_latents = noisy_latents / ((sigmas ** 2 + 1) ** 0.5)
 
                 # Get the text embedding for conditioning.
                 # encoder_hidden_states = encode_image(
@@ -1014,9 +1008,9 @@ def main():
                     # Sample masks for the original images.
                     image_mask_dtype = conditional_latents.dtype
                     image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                            (random_p >= args.conditioning_dropout_prob).to(
+                                image_mask_dtype)
+                            * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
                     image_mask = image_mask.reshape(bsz, 1, 1, 1)
                     # Final image conditioning.
@@ -1034,10 +1028,10 @@ def main():
                     inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
                 # Denoise the latents
-                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                c_skip = 1 / (sigmas**2 + 1)
+                c_out = -sigmas / ((sigmas ** 2 + 1) ** 0.5)
+                c_skip = 1 / (sigmas ** 2 + 1)
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+                weighing = (1 + sigmas ** 2) * (sigmas ** -2.0)
 
                 # # MSE loss
                 # loss = torch.mean(
@@ -1052,10 +1046,15 @@ def main():
                 loss_msk = loss_msk[:, :, None, None, None]
                 loss_msk = loss_msk.expand(-1, -1, denoised_latents.shape[2], denoised_latents.shape[3],
                                            denoised_latents.shape[4])
+                if 'spatial_mask' in batch:
+                    spatial_mask = batch['spatial_mask'].unsqueeze(1).unsqueeze(1).repeat(1,loss_msk.shape[1],loss_msk.shape[2],1,1)
+                    loss_msk = loss_msk * spatial_mask
                 # loss = torch.mean((weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk])
                 loss = torch.sum(
                     (weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk]) / torch.sum(
                     torch.ones_like(loss_msk))
+
+                
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
@@ -1109,10 +1108,10 @@ def main():
                             args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
-                        
+
                         unwrapped_unet = accelerator.unwrap_model(unet)
                         unet_lora_state_dict = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(unwrapped_unet)
+                            get_peft_model_state_dict(unwrapped_unet, adapter_name="default_0")
                         )
 
                         StableDiffusionPipeline.save_lora_weights(
@@ -1124,8 +1123,8 @@ def main():
                         logger.info(f"Saved state to {save_path}")
                     # sample images!
                     if (
-                        (global_step % args.validation_steps == 0)
-                        or (global_step == 1)
+                            (global_step % args.validation_steps == 0)
+                            or (global_step == 1)
                     ):
                         logger.info(
                             f"Running validation... \n Generating {args.num_validation_images} videos."
@@ -1151,9 +1150,10 @@ def main():
                             os.makedirs(val_save_dir)
 
                         with torch.autocast(
-                            str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
+                                str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
-                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png', 'patch_6518_17725_15895.png', 'patch_6511_20844_16450.png']
+                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png',
+                                       'patch_6518_17725_15895.png', 'patch_6511_20844_16450.png']
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
