@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 from typing import List
 from dataloader import AMCDataset, AMC_TempAug_Dataset
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '6,7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '4,5,6'
 import accelerate
 import numpy as np
 import PIL
@@ -248,7 +248,7 @@ def parse_args():
     parser.add_argument(
         "--pretrained_vae_path",
         type=str,
-        default="/ssd2/AMC_zstack_2_patches/vae_0912/VAETrainer/checkpoint_60000/pytorch_model.bin",
+        default="/ssd2/AMC_zstack_2_patches/vae_1017/VAETrainer/checkpoint_60000/pytorch_model.bin",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -449,7 +449,7 @@ def parse_args():
     parser.add_argument(
         "--wandb_run_name",
         type=str,
-        default="output1015_unet_full_lora_v2_temp",
+        default="output1015_unet_full_lora_v3_temp",
     )
     parser.add_argument(
         "--local_rank",
@@ -498,8 +498,8 @@ def parse_args():
     parser.add_argument(
         "--pretrain_unet_lora",
         type=str,
-        # default="/ssd2/AMC_zstack_2_patches/output0912_unet_lora/checkpoint-60000/pytorch_lora_weights.safetensors",
-        default="/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2/checkpoint-40000/",
+        # default="/ssd2/AMC_zstack_2_patches/output0922_unet_full_lora32/checkpoint-40000/",
+        default="/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2/checkpoint-45000/",
         help="use lora weight for unet block",
     )
     parser.add_argument(
@@ -610,6 +610,8 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
+    # from safetensors.torch import load_file
+    # weights_a = load_file("/ssd2/AMC_zstack_2_patches/output0922_unet_full_lora32/checkpoint-40000/pytorch_lora_weights.safetensors")
     unet.load_attn_procs(args.pretrain_unet_lora)
     # Freeze the unet parameters before adding adapters
     print("--- Initial state before loading full LoRA adapter ---")
@@ -762,7 +764,7 @@ def main():
 
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
-    train_dataset = AMC_TempAug_Dataset(data_dir=args.base_folder, split="train", img_size=args.width,
+    train_dataset = AMCDataset(data_dir=args.base_folder, split="train", img_size=args.width,
                                         sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
@@ -1041,9 +1043,9 @@ def main():
                 # )
                 # loss = loss.mean()
                 # MSE loss
-                loss_msk = torch.stack(batch["mask"], dim=0)
-                loss_msk = loss_msk.permute(1, 0)
-                loss_msk = loss_msk[:, :, None, None, None]
+                loss_msk_raw = torch.stack(batch["mask"], dim=0)
+                loss_msk_raw = loss_msk_raw.permute(1, 0)
+                loss_msk = loss_msk_raw[:, :, None, None, None]
                 loss_msk = loss_msk.expand(-1, -1, denoised_latents.shape[2], denoised_latents.shape[3],
                                            denoised_latents.shape[4])
                 if 'spatial_mask' in batch:
@@ -1054,7 +1056,21 @@ def main():
                     (weighing.float() * (denoised_latents.float() - target.float()) ** 2)[loss_msk]) / torch.sum(
                     torch.ones_like(loss_msk))
 
-                
+                # add new loss of first second derivative
+                loss_first = 0.0
+                for b_idx in range(loss_msk_raw.shape[0]):
+                    pred_first_de = torch.diff(denoised_latents.float()[b_idx][loss_msk_raw[b_idx]], dim=0)
+                    target_first_de = torch.diff(target.float()[b_idx][loss_msk_raw[b_idx]], dim=0)
+                    loss_first += torch.sum(weighing.float()[b_idx] * (pred_first_de.float() - target_first_de.float()) ** 2)
+                loss_first = loss_first / torch.sum(torch.ones_like(loss_msk))
+
+                loss_second = 0.0
+                for b_idx in range(loss_msk_raw.shape[0]):
+                    pred_second_de = torch.diff(denoised_latents.float()[b_idx][loss_msk_raw[b_idx]], n=2, dim=0)
+                    target_second_de = torch.diff(target.float()[b_idx][loss_msk_raw[b_idx]], n=2, dim=0)
+                    loss_second += torch.sum(weighing.float()[b_idx] * (pred_second_de.float() - target_second_de.float()) ** 2)
+                loss_second = loss_second / torch.sum(torch.ones_like(loss_msk))
+                loss += 0.25 * loss_first + 0.125 * loss_second
 
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
@@ -1162,7 +1178,7 @@ def main():
                                     width=args.width,
                                     num_frames=num_frames,
                                     decode_chunk_size=8,
-                                    motion_bucket_id=1,
+                                    motion_bucket_id=1.7,
                                     fps=7,
                                     noise_aug_strength=0.02,
                                     # generator=generator,

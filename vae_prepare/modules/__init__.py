@@ -1,2 +1,2 @@
-from .discriminator import PatchGAN, init_weights
+from .discriminator import PatchGAN3D, weights_init
 from .mylpips import LPIPS, DiffToLogits

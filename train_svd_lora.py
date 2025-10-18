@@ -246,7 +246,7 @@ def parse_args():
     parser.add_argument(
         "--pretrained_vae_path",
         type=str,
-        default="/ssd2/AMC_zstack_2_patches/vae_0912/VAETrainer/checkpoint_60000/pytorch_model.bin",
+        default="/ssd2/AMC_zstack_2_patches/vae_1017/VAETrainer/checkpoint_60000/pytorch_model.bin",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -297,7 +297,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v2/',
+        default='/ssd2/AMC_zstack_2_patches/output1015_unet_full_lora_v3/',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -454,7 +454,7 @@ def parse_args():
     parser.add_argument(
         "--wandb_run_name",
         type=str,
-        default="output1015_unet_full_lora_v2",
+        default="output1015_unet_full_lora_v3",
     )
     parser.add_argument(
         "--local_rank",
@@ -480,8 +480,8 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        # default=None,
-        default='checkpoint-30000',  # checkpoint-40000
+        default=None,
+        # default='checkpoint-37500',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -1111,13 +1111,36 @@ def main():
                         logger.info(f"Saved state to {save_path}")
                         
                         unwrapped_unet = accelerator.unwrap_model(unet)
-                        unet_lora_state_dict = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(unwrapped_unet)
+
+                        # Get the state dictionary, which may have the incorrect "base_model.model" prefix
+                        lora_state_dict_with_prefix = get_peft_model_state_dict(unwrapped_unet)
+
+                        # --- ADD THIS FIX: Manually clean the keys ---
+                        from collections import OrderedDict
+                        unet_lora_state_dict = OrderedDict()
+                        prefix_to_remove = "base_model.model."
+
+                        for k, v in lora_state_dict_with_prefix.items():
+                            if k.startswith(prefix_to_remove):
+                                # If the key has the prefix, remove it
+                                new_key = k[len(prefix_to_remove):]
+                                unet_lora_state_dict[new_key] = v
+                            else:
+                                # Otherwise, keep the key as is
+                                unet_lora_state_dict[k] = v
+
+                        # --- Continue with your saving logic ---
+                        # Now, unet_lora_state_dict has the clean keys
+                        converted_state_dict = convert_state_dict_to_diffusers(
+                            unet_lora_state_dict
                         )
+                        # unet_lora_state_dict = convert_state_dict_to_diffusers(
+                        #     get_peft_model_state_dict(unwrapped_unet)
+                        # )
 
                         StableDiffusionPipeline.save_lora_weights(
                             save_directory=save_path,
-                            unet_lora_layers=unet_lora_state_dict,
+                            unet_lora_layers=converted_state_dict,
                             safe_serialization=True,
                         )
 

@@ -1,0 +1,24 @@
+layers: ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14",
+              "z15", "z16", "z17", "z18"]
+metrics_to_run: ["ssim", "psnr", "lpips", "ssim_ver", "psnr_ver", "lpips_ver"]
+metrics_to_run_vbench: ["temporal_flickering"]
+blur_threshold: 0.2
+size: 256
+num_frame: 11
+sample_num: 2048
+sample_num_frame: 10000
+split_file_path: /ssd2/AMC_zstack_2_patches/base_sudo_anno.txt
+data_root_path: /ssd2/AMC_zstack_2_patches_warp/pngs_mid
+gt_folder: gt
+video_sampled_path: gt_video_sampled.csv
+result_pair_path: result_pair.csv
+result_log_path: result_logs.json
+blur_motion_path: /home/compu/jiamu/SVD_Xtend/image_process/blur_motion_data4.csv
+pretrained_model_name: stabilityai/stable-video-diffusion-img2vid-xt
+pretrained_vae_path: /ssd2/AMC_zstack_2_patches/vae_0912/VAETrainer/checkpoint_60000/pytorch_model.bin
+
+
+output_path: /ssd2/AMC_zstack_2_patches/output_for_metrics/output1004_unet_temp_lora32
+pretrained_unet_path: /ssd2/AMC_zstack_2_patches/output1004_unet_temp_lora32_v2/checkpoint-60000/
+pred_folder: 60000_v2_proj
+gif_folder: 60000_v2_proj_gif

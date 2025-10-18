@@ -15,7 +15,8 @@ import lpips
 from dataloader import AMCDataset
 from diffusers import AutoencoderKLTemporalDecoder
 from utils import count_num_params, save_orig_and_generated_gifs
-from modules import PatchGAN, init_weights
+# from modules import PatchGAN, init_weights
+from modules.discriminator import weights_init, NLayerDiscriminator
 from modules import LPIPS as mylpips
 from einops import rearrange
 
@@ -34,7 +35,7 @@ def experiment_config_parser():
     parser.add_argument("--wandb_run_name",
                         # required=True,
                         type=str,
-                        default="vae_0903",
+                        default="vae_1017",
                         metavar="wandb_run_name")
 
     parser.add_argument("--working_directory",
@@ -42,7 +43,7 @@ def experiment_config_parser():
                         folder labeled by the experiment name",
                         # required=True,
                         type=str,
-                        default="/ssd2/AMC_zstack_2_patches/vae_0903",
+                        default="/ssd2/AMC_zstack_2_patches/vae_1017",
                         metavar="working_directory")
 
     parser.add_argument("--log_wandb",
@@ -52,7 +53,8 @@ def experiment_config_parser():
 
     parser.add_argument("--resume_from_checkpoint",
                         help="Pass name of checkpoint folder to resume training from",
-                        default=None,
+                        default='checkpoint_38000',
+                        # default=None,
                         type=str,
                         metavar="resume_from_checkpoint")
 
@@ -72,13 +74,13 @@ def experiment_config_parser():
 
     parser.add_argument("--path_to_dataset",
                         help="Root directory of dataset",
-                        default='/ssd1/AMC_zstack_2_patches_warp/pngs_mid/',
+                        default='/ssd2/AMC_zstack_2_patches_warp/pngs_mid/',
                         # required=True,
                         type=str)
 
     parser.add_argument("--path_to_save_gens",
                         help="Folder you want to store the testing generations througout training",
-                        default="/ssd2/AMC_zstack_2_patches/vae_0903/gen",
+                        default="/ssd2/AMC_zstack_2_patches/vae_1017/gen",
                         type=str)
 
     parser.add_argument("--image_size",
@@ -113,6 +115,10 @@ def main():
                               log_with="wandb" if args.log_wandb else None)
 
     if args.log_wandb:
+        import wandb
+        wandb.login(
+            key="928c7cd0eba71d0831bcf8c85a2e47b0086340e6"
+        )
         accelerator.init_trackers(args.experiment_name, init_kwargs={"wandb": {"name": args.wandb_run_name}})
 
     ### Load Model ###
@@ -146,11 +152,14 @@ def main():
     use_disc = False
     if training_config["use_patchgan"]:
         use_disc = True
-        discriminator = PatchGAN(input_channels=3,
-                                 start_dim=training_config["disc_start_dim"],
-                                 depth=training_config["disc_depth"],
-                                 # kernel_size=training_config["disc_kernel_size"],
-                                 leaky_relu_slope=training_config["disc_leaky_relu"]).apply(init_weights)
+        # discriminator = PatchGAN(input_channels=3,
+        #                          start_dim=training_config["disc_start_dim"],
+        #                          depth=training_config["disc_depth"],
+        #                          # kernel_size=training_config["disc_kernel_size"],
+        #                          leaky_relu_slope=training_config["disc_leaky_relu"]).apply(init_weights)
+        discriminator = NLayerDiscriminator(
+            input_nc=3, n_layers=3
+        ).apply(weights_init)
 
         discriminator = discriminator.to(accelerator.device)
 
@@ -178,17 +187,8 @@ def main():
                                            betas=(training_config["optimizer_beta1"], training_config["optimizer_beta2"]),
                                            weight_decay=training_config["optimizer_weight_decay"])
 
-    bce_loss = nn.BCELoss()
     ### Get DataLoader ###
     mini_batchsize = training_config["per_gpu_batch_size"] // training_config["gradient_accumulations_steps"]
-    # dataset = get_dataset(dataset=args.dataset,
-    #                       path_to_data=args.path_to_dataset,
-    #                       num_channels=vae_config["in_channels"],
-    #                       img_size=vae_config["img_size"],
-    #                       random_resize=training_config["random_resize"],
-    #                       interpolation=training_config["interpolation"],
-    #                       return_caption=False)
-
     train_dataset = AMCDataset(data_dir=args.path_to_dataset,
                                split="train",
                                )
@@ -240,7 +240,7 @@ def main():
                  "perceptual_loss": 0,
                  "reconstruction_loss": 0,
                  "lpips_loss": 0,
-                 # "kl_loss": 0,
+                 "kl_loss": 0,
                  "generator_loss": 0,
                  "adp_weight": 0}
 
@@ -292,9 +292,9 @@ def main():
             model.train()
             optimizer.zero_grad()
 
-            with torch.no_grad():
-                posterior = model.module.encode(pixel_values).latent_dist
-                z = posterior.mode()
+            # with torch.no_grad():
+            posterior = model.module.encode(pixel_values).latent_dist
+            z = posterior.sample() # !!!!
             reconstructions = model.module.decode(z, num_frames=args.num_frames).sample
             # loss_msk = torch.stack(batch["mask"], dim=0)
             # msk = loss_msk.squeeze()
@@ -307,9 +307,9 @@ def main():
             with accelerator.accumulate(model):
                 ### Reconstruction Loss ###
                 if training_config["reconstruction_loss_fn"] == "l1":
-                    reconstruction_loss = F.l1_loss(pixel_values, reconstructions, reduction='none').mean()
+                    reconstruction_loss = F.l1_loss(pixel_values.contiguous(), reconstructions.contiguous(), reduction='none').mean()
                 elif training_config["reconstruction_loss_fn"] == "l2":
-                    reconstruction_loss = F.mse_loss(pixel_values, reconstructions, reduction='none').mean()
+                    reconstruction_loss = F.mse_loss(pixel_values.contiguous(), reconstructions.contiguous(), reduction='none').mean()
                 else:
                     raise ValueError(f"{training_config['reconstruction_loss_fn']} is not a Valid Reconstruction Loss")
 
@@ -320,24 +320,22 @@ def main():
                 # if use_lpips:
                 #     lpips_loss = lpips_loss_fn(reconstructions, pixel_values)[loss_msk].mean()
                 if use_lpips:
-                    lpips_loss = lpips_loss_fn(reconstructions, pixel_values).mean()
+                    lpips_loss = lpips_loss_fn(reconstructions.contiguous(), pixel_values.contiguous()).mean()
 
                 ### Add Together Losses ###
                 perceptual_loss = reconstruction_loss + training_config["lpips_weight"] * lpips_loss
                 loss = perceptual_loss
 
-                ### Compute Discriminator Loss (incase we are training the discriminator) ###
+                ## Compute Discriminator Loss (incase we are training the discriminator) ###
                 gen_loss = torch.zeros(size=(), device=pixel_values.device)
                 adaptive_weight = torch.zeros(size=(), device=pixel_values.device)
                 if train_disc:
                     # print(reconstructions.shape)
                     # print(rearrange(reconstructions, "(b f) c h w -> b c f h w", f=args.num_frames).shape)
-                    gen_loss = -1 * discriminator(
-                        rearrange(reconstructions, "(b f) c h w -> b c f h w", f=args.num_frames)
-                    ).mean()
-                    # fake = discriminator(rearrange(reconstructions, "(b f) c h w -> b c f h w", b=1))
-                    # gen_loss = bce_loss(nn.functional.sigmoid(fake), torch.ones_like(fake))
-
+                    # gen_loss = -1 * discriminator(
+                    #     rearrange(reconstructions.contiguous(), "(b f) c h w -> b c f h w", f=args.num_frames)
+                    # ).mean()
+                    gen_loss = -1 * discriminator(reconstructions.contiguous()).mean()
 
                     last_layer = accelerator.unwrap_model(model).decoder.conv_out.weight
                     norm_grad_wrt_perceptual_loss = torch.autograd.grad(outputs=loss,
@@ -347,7 +345,7 @@ def main():
                                                                  inputs=last_layer,
                                                                  retain_graph=True)[0].detach().norm(p=2)
 
-                    adaptive_weight = norm_grad_wrt_perceptual_loss / norm_grad_wrt_gen_loss.clamp(min=1e-8)
+                    adaptive_weight = norm_grad_wrt_perceptual_loss / norm_grad_wrt_gen_loss.clamp(min=1e-4)
                     adaptive_weight = adaptive_weight.clamp(max=1e4)
 
                     loss = loss + adaptive_weight * gen_loss * training_config["disc_weight"]
@@ -356,8 +354,8 @@ def main():
                 # kl_loss = model_outputs["kl_loss"].mean()
                 # loss = loss + kl_loss * training_config["kl_weight"]
                 # kl_loss = posterior.kl()[msk].mean()
-                # kl_loss = posterior.kl().mean()
-                # loss = loss + kl_loss * training_config["kl_weight"]
+                kl_loss = posterior.kl().mean()
+                loss = loss + kl_loss * training_config["kl_weight"]
 
                 ### Update Model ###
                 accelerator.backward(loss)
@@ -373,9 +371,10 @@ def main():
                        "perceptual_loss": perceptual_loss,
                        "reconstruction_loss": reconstruction_loss,
                        "lpips_loss": lpips_loss,
-                       # "kl_loss": kl_loss,
+                       "kl_loss": kl_loss,
                        "generator_loss": gen_loss,
-                       "adp_weight": adaptive_weight}
+                       "adp_weight": adaptive_weight
+                       }
 
                 ### Accumulate Log ###
                 for key, value in log.items():
@@ -385,9 +384,9 @@ def main():
             model.eval()
             disc_optimizer.zero_grad()
 
-            with torch.no_grad():
-                posterior = model.module.encode(pixel_values).latent_dist
-                z = posterior.mode()
+            # with torch.no_grad():
+            posterior = model.module.encode(pixel_values).latent_dist
+            z = posterior.sample()
             reconstructions = model.module.decode(z, num_frames=args.num_frames).sample
 
             # loss_msk = torch.stack(batch["mask"], dim=0)
@@ -399,12 +398,14 @@ def main():
                 # fake = discriminator(reconstructions[msk])
                 # TODO: It will not work when batch size is not 1
                 # real = discriminator(rearrange(pixel_values[msk], "(b f) c h w -> b c f h w", b=1))
-                real = discriminator(rearrange(pixel_values, "(b f) c h w -> b c f h w", b=1))
-                fake = discriminator(rearrange(reconstructions, "(b f) c h w -> b c f h w", b=1))
-                loss = (F.relu(1 + fake) + F.relu(1 - real)).mean()
-                # loss_real = bce_loss(nn.functional.sigmoid(real), torch.ones_like(real))
-                # loss_fake = bce_loss(nn.functional.sigmoid(fake), torch.zeros_like(fake))
-                # loss = loss_real + loss_fake
+                # real = discriminator(rearrange(pixel_values.contiguous(), "(b f) c h w -> b c f h w", b=1))
+                # fake = discriminator(rearrange(reconstructions.contiguous(), "(b f) c h w -> b c f h w", b=1))
+                # loss = (F.relu(1 + fake) + F.relu(1 - real)).mean()
+                real = discriminator(pixel_values.contiguous())
+                fake = discriminator(reconstructions.contiguous())
+                loss_real = torch.mean(F.relu(1. - real))
+                loss_fake = torch.mean(F.relu(1. + fake))
+                loss = 0.5 * (loss_real + loss_fake)
 
                 ### Update Discriminator Model ###
                 accelerator.backward(loss)

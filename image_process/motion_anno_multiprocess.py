@@ -25,7 +25,6 @@ def estimate_motion(clear_layer, slide_name, patch_name, target_layers, motion_d
         prvs = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         mag_list = []
         mag_list1 = []
-        # print("Clear layer is: ", clear_layer)
         # print(f"Aligning all layers to reference: {clear_layer}/{patch_name}")
 
         for l_idx, next_layer in enumerate(target_layers):
@@ -36,7 +35,6 @@ def estimate_motion(clear_layer, slide_name, patch_name, target_layers, motion_d
                 mag_list.append(-1)
                 mag_list1.append(-1)
                 continue
-
 
             next_frame_gray = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
             flow = cv2.calcOpticalFlowFarneback(prvs, next_frame_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
@@ -58,8 +56,8 @@ def estimate_motion(clear_layer, slide_name, patch_name, target_layers, motion_d
             # --- 4. Apply the matrix to warp the COLOR image ---
             h, w = next_frame_gray.shape
             ### MODIFIED: We apply the transform to the original color frame.
-            aligned_color_frame = cv2.warpAffine(frame2, warp_matrix, (w, h),
-                                                 flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+            aligned_color_frame = cv2.warpAffine(frame2, warp_matrix, (w, h), flags=cv2.INTER_CUBIC + cv2.WARP_INVERSE_MAP)
+            # aligned_color_frame = cv2.cvtColor(aligned_color_frame, cv2.COLOR_BGR2RGB)
             aligned_gray_frame = cv2.cvtColor(aligned_color_frame, cv2.COLOR_BGR2GRAY)
             # --- CORE LOGIC (UNCHANGED) ---
             # Calculate dense optical flow using Farneback method
@@ -67,34 +65,13 @@ def estimate_motion(clear_layer, slide_name, patch_name, target_layers, motion_d
             mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             mag[np.where(mag == np.inf)] = 0
             mag_list1.append(float(np.mean(mag)))
-            # except:
-            #     mag_list.append(-1)
-            # global_dx = np.median(flow[..., 0])
-            # global_dy = np.median(flow[..., 1])
-            # flow[..., 0] -= global_dx
-            # flow[..., 1] -= global_dy
-            # mag, ang = cv.cartToPolar(flow[..., 0], flow[..., 1])
-            # mag[np.where(mag == np.inf)] = 0
-            # mag_list1.append(float(np.mean(mag)))
 
-            # Convert flow vectors from cartesian (dx, dy) to polar (magnitude, angle)
-
-            # # Map angle to Hue and magnitude to Value
-            # Create an HSV image for visualization, same as the original script
-            # hsv = np.zeros_like(frame1)
-            # hsv[..., 1] = 255  # Set saturation to maximum
-            # hsv[..., 0] = ang * 180 / np.pi / 2
-            # hsv[..., 2] = cv.normalize(mag, None, 0, 255, cv.NORM_MINMAX)
-            #
-            # # Convert the HSV image back to BGR for display
-            # bgr = cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
-
-            # --- DISPLAY (SLIGHTLY MODIFIED) ---
-            # Show the optical flow visualization
-            # skimage.io.imsave(f'{frame1_path.split("/")[-2]}_original.png', frame1)
-            os.makedirs(f'/ssd1/AMC_zstack_2_patches_warp/pngs_mid/{slide_name}/{next_layer}/', exist_ok=True)
-            skimage.io.imsave(f'/ssd1/AMC_zstack_2_patches_warp/pngs_mid/{slide_name}/{next_layer}/{patch_name}',
-                              aligned_color_frame)
+            output_dir = os.path.join(f"/ssd2/AMC_zstack_2_patches_warp/pngs_mid3", slide_name, next_layer)
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, patch_name)
+            # print(output_path)
+            cv2.imwrite(output_path, aligned_color_frame)
+            # skimage.io.imsave(output_path, aligned_color_frame)
 
         motion_dict[slide_name][patch_name] = mag_list
         motion_dict1[slide_name][patch_name] = mag_list1
@@ -116,9 +93,9 @@ def process_row(row, target_layers, root_dir):
     # Extract data from the row
     slide_name = row['slide_name']
     patch_name = row['patch_name']
-    start_layer = int(row['start_indices'])
-    end_layer = int(row['end_indices'])
-    clear_layer = int(row['min_indices'])
+    start_layer = row['start_indices']
+    end_layer = row['end_indices']
+    clear_layer = row['min_indices']
 
     # The list of scores is now a single string 'v1 v2 v3...'. We need to parse it.
     blur_scores_str = row['blur_scores']
@@ -216,7 +193,7 @@ if __name__ == "__main__":
 
     print("Processing complete.")
 
-    with open("./blur_motion_data.csv", "w") as wf:
+    with open("./blur_motion_data_0913.csv", "w") as wf:
         wf.write("slide_name,patch_name,{},start_indices,end_indices,min_indices\n".format(",".join(target_layers)))
         for slide_name, slide_data in blur_degree_dict.items():
             for patch_name, blur_scores in slide_data.items():
@@ -228,7 +205,7 @@ if __name__ == "__main__":
                 scores = ",".join(combined_scores)
                 wf.write("{},{},{}\n".format(slide_name, patch_name, scores, start_layer, end_layer, clear_layer))
 
-    with open("./blur_motion_data1.csv", "w") as wf:
+    with open("./blur_motion_data1_0913.csv", "w") as wf:
         wf.write("slide_name,patch_name,{},start_indices,end_indices,min_indices\n".format(",".join(target_layers)))
         for slide_name, slide_data in blur_degree_dict.items():
             for patch_name, blur_scores in slide_data.items():

@@ -22,13 +22,12 @@ import random
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
-
+from typing import List
 import cv2
 import math
 
 from dataloader import AMCDataset
-
-os.environ["CUDA_VISIBLE_DEVICES"] = '0, 1, 2, 3'
+os.environ["CUDA_VISIBLE_DEVICES"] = '4,5,6,7'
 import accelerate
 import numpy as np
 import PIL
@@ -47,7 +46,7 @@ from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from einops import rearrange
 
 import diffusers
-from diffusers import StableVideoDiffusionPipeline
+from src.pipeline_stable_video_diffusion import StableVideoDiffusionPipeline
 from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
@@ -301,8 +300,7 @@ def parse_args():
     )
     parser.add_argument(
         "--base_folder",
-        # default='/ssd2/AMC_zstack_2_patches/pngs_mid/24S 059505;E;5;;FA0824;1_241226_011806/z00',
-        default='/ssd2/AMC_zstack_2_patches/pngs_mid/',
+        default='/ssd2/AMC_zstack_2_patches_warp/pngs_mid/',
         required=False,
         type=str,
     )
@@ -310,6 +308,13 @@ def parse_args():
         "--pretrained_model_name_or_path",
         type=str,
         default="stabilityai/stable-video-diffusion-img2vid-xt",
+        required=False,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+    )
+    parser.add_argument(
+        "--pretrained_vae_path",
+        type=str,
+        default="/ssd2/AMC_zstack_2_patches/vae_1017/VAETrainer/checkpoint_60000/pytorch_model.bin",
         required=False,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -344,7 +349,7 @@ def parse_args():
     parser.add_argument(
         "--validation_steps",
         type=int,
-        default=5000,
+        default=1000,
         help=(
             "Run fine-tuning validation every X epochs. The validation process consists of running the text/image prompt"
             " multiple times: `args.num_validation_images`."
@@ -353,7 +358,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default='/ssd2/AMC_zstack_2_patches/output0701/',
+        default='/ssd2/AMC_zstack_2_patches/unet_full_v3',
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -362,7 +367,7 @@ def parse_args():
     parser.add_argument(
         "--per_gpu_batch_size",
         type=int,
-        default=3,
+        default=1,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument("--num_train_epochs", type=int, default=10)
@@ -386,7 +391,7 @@ def parse_args():
     parser.add_argument(
         "--learning_rate",
         type=float,
-        default=1e-5,
+        default=4.5e-6,
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument(
@@ -398,7 +403,7 @@ def parse_args():
     parser.add_argument(
         "--lr_scheduler",
         type=str,
-        default="constant",
+        default="constant_with_warmup",
         help=(
             'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
             ' "constant", "constant_with_warmup"]'
@@ -407,7 +412,7 @@ def parse_args():
     parser.add_argument(
         "--lr_warmup_steps",
         type=int,
-        default=500,
+        default=1500,
         help="Number of steps for the warmup in the lr scheduler.",
     )
     parser.add_argument(
@@ -529,7 +534,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=5000,
+        default=2500,
         help=(
             "Save a checkpoint of the training state every X updates. These checkpoints are only suitable for resuming"
             " training using `--resume_from_checkpoint`."
@@ -544,8 +549,8 @@ def parse_args():
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
-        default=None, # checkpoint-40000
-        # default='checkpoint-220000',  # checkpoint-40000
+        default=None,
+        # default='checkpoint-70000',  # checkpoint-40000
         help=(
             "Whether training should be resumed from a previous checkpoint. Use a path saved by"
             ' `--checkpointing_steps`, or `"latest"` to automatically select the last available checkpoint.'
@@ -562,6 +567,11 @@ def parse_args():
         type=str,
         default=None,
         help="use weight for unet block",
+    )
+    parser.add_argument(
+        "--wandb_run_name",
+        type=str,
+        default="unet_full_v3",
     )
 
     # parser.add_argument(
@@ -673,18 +683,18 @@ def main():
     #         low_cpu_mem_usage=True,
     #         variant="fp16"
     #     )
-    # else:
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
         args.pretrained_model_name_or_path if args.pretrain_unet is None else args.pretrain_unet,
         subfolder="unet",
         low_cpu_mem_usage=True,
         variant="fp16"
     )
-
     # Freeze vae and image_encoder
+    vae_state_dict = torch.load(args.pretrained_vae_path, map_location="cpu")
+    vae.load_state_dict(vae_state_dict, strict=True)
     vae.requires_grad_(False)
     image_encoder.requires_grad_(False)
-    unet.requires_grad_(False)
+    unet.requires_grad_(True)
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
@@ -780,17 +790,18 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    parameters_list = []
+    # parameters_list = []
 
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
-    for name, param in unet.named_parameters():
-        if 'temporal_transformer_block' in name:
-            parameters_list.append(param)
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
+    # for name, param in unet.named_parameters():
+    #     # if 'temporal_transformer_block' in name or 'temporal_res_block' in name:
+    #     if 'temporal_transformer_block' in name:
+    #         parameters_list.append(param)
+    #         param.requires_grad = True
+    #     else:
+    #         param.requires_grad = False
     optimizer = optimizer_cls(
-        parameters_list,
+        unet.parameters(),
         lr=args.learning_rate,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
@@ -860,7 +871,7 @@ def main():
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        accelerator.init_trackers("SVDXtend", config=vars(args))
+        accelerator.init_trackers("SVDXtend", config=vars(args), init_kwargs={"wandb": {"name": args.wandb_run_name}})
 
     # Train!
     total_batch_size = args.per_gpu_batch_size * \
@@ -900,29 +911,82 @@ def main():
         image_embeddings = image_encoder(pixel_values).image_embeds
         return image_embeddings
 
+    # def _get_add_time_ids(
+    #         fps,
+    #         motion_bucket_id,
+    #         noise_aug_strength,
+    #         dtype,
+    #         batch_size,
+    # ):
+    #     add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
+    #
+    #     passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+    #                            len(add_time_ids)
+    #     expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+    #
+    #     if expected_add_embed_dim != passed_add_embed_dim:
+    #         raise ValueError(
+    #             f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
+    #         )
+    #
+    #     add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
+    #     add_time_ids = add_time_ids.repeat(batch_size, 1)
+    #     return add_time_ids
+
+    # Potentially load in the weights and states from a previous save
+
     def _get_add_time_ids(
             fps,
-            motion_bucket_id,
-            noise_aug_strength,
+            motion_bucket_id: List[int],
+            noise_aug_strength: List[int],
             dtype,
             batch_size,
     ):
-        add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
+        # add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
+        #
+        # passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+        #                        len(add_time_ids)
+        # expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+        #
+        # if expected_add_embed_dim != passed_add_embed_dim:
+        #     raise ValueError(
+        #         f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
+        #     )
+        #
+        # add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
+        # add_time_ids = add_time_ids.repeat(batch_size, 1)
+        # return add_time_ids
 
-        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
-                               len(add_time_ids)
+        """
+            Modified function to support a batch of motion_bucket_ids.
+            """
+        # 1. Input validation
+        if len(motion_bucket_id) != batch_size:
+            raise ValueError(
+                f"The length of motion_bucket_id list ({len(motion_bucket_id)}) must match the batch_size ({batch_size})."
+            )
+
+        # 2. Create a list of [fps, m_id, noise] for each item in the batch
+        add_time_ids_list = []
+        for i in range(batch_size):
+            add_time_ids_list.append([fps, motion_bucket_id[i], noise_aug_strength[i]])
+
+        # 3. Check dimensions (this part is the same as the original)
+        passed_add_embed_dim = unet.config.addition_time_embed_dim * len(add_time_ids_list[0])
         expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
-                f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created. The model has an incorrect config. Please check `unet.config.time_embedding_type` and `text_encoder_2.config.projection_dim`."
+                f"Model expects an added time embedding vector of length {expected_add_embed_dim}, but a vector of {passed_add_embed_dim} was created."
             )
 
-        add_time_ids = torch.tensor([add_time_ids], dtype=dtype)
-        add_time_ids = add_time_ids.repeat(batch_size, 1)
+        # 4. Convert the list of lists directly to a tensor of shape (batch_size, 3)
+        add_time_ids = torch.tensor(add_time_ids_list, dtype=dtype)
+
+        # The original `.repeat(batch_size, 1)` is now removed.
+
         return add_time_ids
 
-    # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
         if args.resume_from_checkpoint != "latest":
             path = os.path.basename(args.resume_from_checkpoint)
@@ -973,7 +1037,7 @@ def main():
                     accelerator.device, non_blocking=True
                 )
                 encoder_hidden_states = encode_image(conditional_pixel_values.float())
-                conditional_pixel_values = conditional_pixel_values[:, None, :]
+                conditional_pixel_values = conditional_pixel_values[:, None, :] # 3,3,256,256 -> 3,1,3,256,256
 
                 # if args.embeddder:
                 #     alpha = batch["alpha"].to(weight_dtype).to(
@@ -989,9 +1053,9 @@ def main():
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
-
                 cond_sigmas = rand_log_normal(shape=[bsz, ], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
+                noise_aug_strength = cond_sigmas
+                # noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
@@ -1019,11 +1083,18 @@ def main():
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
                 added_time_ids = _get_add_time_ids(
                     7,  # fixed
-                    127,  # motion_bucket_id = 127, fixed
+                    batch["motion"],  # motion_bucket_id = 127, fixed
                     noise_aug_strength,  # noise_aug_strength == cond_sigmas
                     encoder_hidden_states.dtype,
                     bsz,
                 )
+                # added_time_ids = _get_add_time_ids(
+                #     7,  # fixed
+                #     127,  # motion_bucket_id = 127, fixed
+                #     noise_aug_strength,  # noise_aug_strength == cond_sigmas
+                #     encoder_hidden_states.dtype,
+                #     bsz,
+                # )
                 added_time_ids = added_time_ids.to(latents.device)
 
                 # Conditioning dropout to support classifier-free guidance during inference. For more details
@@ -1070,7 +1141,7 @@ def main():
                 weighing = (1 + sigmas ** 2) * (sigmas ** -2.0)
 
                 # MSE loss
-                loss_msk = torch.stack(batch["blur_bool"], dim=0)
+                loss_msk = torch.stack(batch["mask"], dim=0)
                 loss_msk = loss_msk.permute(1, 0)
                 loss_msk = loss_msk[:, :, None, None, None]
                 loss_msk = loss_msk.expand(-1, -1, denoised_latents.shape[2], denoised_latents.shape[3], denoised_latents.shape[4])
@@ -1176,7 +1247,7 @@ def main():
                         with torch.autocast(
                                 str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
-                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png', 'patch_6570_17725_29207.png', 'patch_9993_29408_33490.png']
+                            val_arr = ['patch_6446_23008_34514.png', 'patch_6507_20844_15426.png', 'patch_6518_17725_15895.png', 'patch_6511_20844_16450.png']
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
@@ -1185,7 +1256,7 @@ def main():
                                     width=args.width,
                                     num_frames=num_frames,
                                     decode_chunk_size=8,
-                                    motion_bucket_id=127,
+                                    motion_bucket_id=1,
                                     fps=7,
                                     noise_aug_strength=0.02,
                                     # generator=generator,
