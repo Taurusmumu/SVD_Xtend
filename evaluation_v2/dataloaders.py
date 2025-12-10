@@ -1,5 +1,5 @@
 import os
-import random
+import glob
 import numpy as np
 import pandas as pd
 import torch
@@ -33,6 +33,28 @@ def custom_collate_fn(batch):
         "frames": frames,
     }
 
+def custom_collate_fn_prostate(batch):
+    """
+    Custom collate function to handle batching of data with strings.
+    """
+    # Separate the different parts of the batch
+    pixel_values = [item['pixel_value'] for item in batch]
+    slide_names = [item['slide_name'] for item in batch]
+    patch_names = [item['patch_name'] for item in batch]
+    cls = [item['cls'] for item in batch]
+
+    # Stack the numerical/array data into tensors
+    # Assuming pixel_values are lists of numpy arrays, we stack them
+    # pixel_values_batch = torch.from_numpy(np.array(pixel_values))
+    # blur_degrees_batch = torch.tensor(blur_degrees, dtype=torch.float32)
+
+    # Return a dictionary where strings are kept as a list
+    return {
+        'cls': cls,
+        'pixel_values': pixel_values,
+        "slide_name": slide_names, # This is now a list of strings
+        "patch_name": patch_names, # This is now a list of strings
+    }
 
 class GTSampleDataset(Dataset):
 
@@ -145,6 +167,96 @@ class GTSampleDataset(Dataset):
             "slide_name": slide_name,
             "patch_name": patch_name.split('.')[0],
             "frames": frames, # layer.png
+        }
+
+        return output
+
+    def __len__(self):
+        return len(self.samples)
+        # return 0
+
+class ProstateAggc22Dataset(Dataset):
+
+    def __init__(
+            self, img_size=256, channels=3,
+            num_frames=11, # 'train' or 'validation' or 'test'
+            data_dir="/data3/AMC_zstack_2_patches_warp/pngs_mid",
+            sample_file_path=None
+    ):
+        self.channels = channels
+        self.img_size = img_size
+        self.transform = transforms.Compose([
+            transforms.CenterCrop((img_size, img_size)),
+            transforms.Lambda(lambda img: img.convert("RGB")),  # _convert_to_rgb
+            # transforms.ToTensor(),
+            # transforms.Normalize(
+            #     mean=(0.48145466, 0.4578275, 0.40821073),
+            #     std=(0.26862954, 0.26130258, 0.27577711)
+            # )
+            # transforms.Normalize([0.5], [0.5]),
+        ])
+        df = pd.read_csv(sample_file_path)
+        self.samples = df['file_path'].values
+        self.cls = df['class'].values
+
+        print("{} samples loaded.".format(len(self.samples)))
+
+    def __getitem__(self, index):
+        fn = self.samples[index]
+        with Image.open(fn) as img:
+            img = self.transform(img)
+        base_dir = '/'.join(os.path.dirname(fn).split('/')[-2:])
+        base_patch = os.path.basename(fn).split('.')[0]
+        output = {
+            'pixel_value': img,
+            'slide_name': base_dir,
+            "patch_name": base_patch,
+            'cls': self.cls[index]
+        }
+        return output
+
+    def __len__(self):
+        return len(self.samples)
+        # return 0
+
+class ProstateHarvardDataset(Dataset):
+
+    def __init__(
+            self, img_size=256, channels=3,
+            num_frames=11, # 'train' or 'validation' or 'test'
+            data_dir="/data3/AMC_zstack_2_patches_warp/pngs_mid",
+            sample_file_path=None
+    ):
+        self.channels = channels
+        self.img_size = img_size
+        self.transform = transforms.Compose([
+            transforms.CenterCrop((512, 512)),
+            transforms.Resize(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.Lambda(lambda img: img.convert("RGB")),  # _convert_to_rgb
+            # transforms.ToTensor(),
+            # transforms.Normalize(
+            #     mean=(0.48145466, 0.4578275, 0.40821073),
+            #     std=(0.26862954, 0.26130258, 0.27577711)
+            # )
+            # transforms.Normalize([0.5], [0.5]),
+        ])
+        df = pd.read_csv(sample_file_path)
+        self.samples = df['file_path'].values
+        self.cls = df['class'].values
+
+        print("{} samples loaded.".format(len(self.samples)))
+
+    def __getitem__(self, index):
+        fn = self.samples[index]
+        with Image.open(fn) as img:
+            img = self.transform(img)
+        base_dir = os.path.dirname(fn).split('/')[-1]
+        base_patch = os.path.basename(fn).split('.')[0]
+        output = {
+            'pixel_value': img,
+            'slide_name': base_dir,
+            "patch_name": base_patch,
+            'cls': self.cls[index]
         }
 
         return output

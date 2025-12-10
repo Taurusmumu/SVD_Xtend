@@ -1,0 +1,23 @@
+layers: ["z00", "z01", "z02", "z03", "z04", "z05", "z06", "z07", "z08", "z09", "z10", "z11", "z12", "z13", "z14",
+              "z15", "z16", "z17", "z18"]
+metrics_to_run: ["ssim_m", "psnr_m", "lpips_m"]
+metrics_to_run_vbench: ["temporal_flickering"]
+size: 256
+num_frame: 11
+sample_num: 2048
+sample_num_frame: 10000
+split_file_path: /ssd2/AMC_zstack_2_patches/base_sudo_anno.txt
+data_root_path: /data3/prostate_harvard/patches_train_750_v0/
+gt_folder: /ssd2/AMC_zstack_2_patches/output_for_metrics_prostate_harvard/gt
+img_sampled_path: /ssd2/AMC_zstack_2_patches/output_for_metrics_prostate_harvard/gt_img_sampled.csv
+result_pair_path: result_pair.csv
+result_log_path: result_logs.json
+pretrained_model_name: stabilityai/stable-video-diffusion-img2vid-xt
+pretrained_vae_path: /ssd2/AMC_zstack_2_patches/vae_1017/VAETrainer/checkpoint_100000/pytorch_model.bin
+pretrained_unet_path: /ssd2/AMC_zstack_2_patches/unet_full_lora_v3_temp/checkpoint-50000/
+is_project: True
+
+output_path: /ssd2/AMC_zstack_2_patches/output_for_metrics_prostate_harvard/unet_full_lora_v3_temp/
+gen_done_path: /data3/prostate_harvard_3D_v2/unet_full_lora_v3_temp_50000_proj/LR/patches_train_750_v0/
+pred_folder: 50000_proj_v2
+gif_folder: 50000_proj_v2_xyz_gif

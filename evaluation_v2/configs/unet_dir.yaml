@@ -18,7 +18,7 @@ pretrained_model_name: stabilityai/stable-video-diffusion-img2vid-xt
 pretrained_vae_path: /ssd2/AMC_zstack_2_patches/vae_1017/VAETrainer/checkpoint_100000/pytorch_model.bin
 
 output_path: /ssd2/AMC_zstack_2_patches/output_for_metrics/unet_full_v3
-pretrained_unet_path: /ssd2/AMC_zstack_2_patches/unet_full_v3/checkpoint-200000/
+pretrained_unet_path: /ssd2/AMC_zstack_2_patches/unet_full_v3/checkpoint-300000/
 is_project: True
-pred_folder: 200000_proj
+pred_folder: 300000_proj
 gif_folder: 200000_proj_xyz_gif

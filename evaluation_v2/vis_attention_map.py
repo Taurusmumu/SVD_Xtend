@@ -1,6 +1,6 @@
 import os
 import argparse
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+os.environ["CUDA_VISIBLE_DEVICES"] = '7'
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
@@ -99,8 +99,8 @@ def main(config_path):
         pred_path = os.path.join(pred_video_path, slide_name, patch_name)
         mid_frame = gt_video_frames[len(gt_video_frames)//2]
 
-        if os.path.exists(pred_path) and len(os.listdir(pred_path)) == config['num_frame']:
-            continue
+        # if os.path.exists(pred_path) and len(os.listdir(pred_path)) == config['num_frame']:
+        #     continue
 
         pred_video_frames = pipeline(
             load_image(mid_frame).resize((config['size'], config['size'])),
@@ -182,7 +182,7 @@ def main(config_path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run SVD model evaluation.")
+    parser = argparse.ArgumentParser(description="Vis attn map.")
     parser.add_argument('--config', type=str, default="./configs/unet_lora_32.yaml", help="Path to the evaluation YAML config file.")
     args = parser.parse_args()
 

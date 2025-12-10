@@ -6,6 +6,7 @@ import PIL
 import numpy as np
 import pandas as pd
 import torch
+import glob
 
 
 def load_config(config_path):
@@ -66,21 +67,85 @@ def sample_gt(config):
         df_sample = df_valid.sample(n=config['sample_num'], random_state=42)
         df_sample.to_csv(video_sampled_path, index=False)
 
+def sample_gt_prostate(config):
+    img_sampled_path = config['img_sampled_path']
+    if os.path.isfile(img_sampled_path) is False:
+        data_root_path = config['data_root_path']
+        cls_0, cls_1, cls_2, cls_3, cls_4, cls_5 = [], [], [], [], [], []
+        if "agg" in config['data_root_path']:
+            total_path_list = []
+            for metadata_path in config['metadata_path']:
+                metadata = pd.read_csv(metadata_path)
+                total_path_list += list(metadata['file_path'])
+            # Class 0: 0, Class 1: 6459, Class 2: 6169, Class 3: 13008, Class 4: 19527, Class 5: 2073
 
-def load_videos_from_folder(dir_path):
+        if "harvard" in config['data_root_path']:
+            total_path_list = glob.glob(os.path.join(data_root_path, '*', '*.jpg'))
+            # Class 0: 2076, Class 1: 6303, Class 2: 4541, Class 3: 2383
+
+        for file_name in total_path_list:
+            cls = file_name.split('.')[0].split('_')[-1]
+            if cls == '0':
+                cls_0.append(file_name)
+            elif cls == '1':
+                cls_1.append(file_name)
+            elif cls == '2':
+                cls_2.append(file_name)
+            elif cls == '3':
+                cls_3.append(file_name)
+            elif cls == '4':
+                cls_4.append(file_name)
+            elif cls == '5':
+                cls_5.append(file_name)
+
+        print(f"Class 0: {len(cls_0)}, Class 1: {len(cls_1)}, Class 2: {len(cls_2)}, Class 3: {len(cls_3)}, Class 4: {len(cls_4)}, Class 5: {len(cls_5)}")
+
+        cls_0_sample = [] if len(cls_0) == 0 else np.random.choice(cls_0, size=int(config['sample_num'] * 0.25), replace=False)
+        cls_1_sample = [] if len(cls_1) == 0 else np.random.choice(cls_1, size=int(config['sample_num'] * 0.25), replace=False)
+        cls_2_sample = [] if len(cls_2) == 0 else np.random.choice(cls_2, size=int(config['sample_num'] * 0.25), replace=False)
+        cls_3_sample = [] if len(cls_3) == 0 else np.random.choice(cls_3, size=int(config['sample_num'] * 0.25), replace=False)
+        cls_4_sample = [] if len(cls_4) == 0 else np.random.choice(cls_4, size=int(config['sample_num'] * 0.25), replace=False)
+        cls_5_sample = [] if len(cls_5) == 0 else np.random.choice(cls_5, size=int(config['sample_num'] * 0.25),
+                                                                   replace=False)
+        labels = [0] * len(cls_0_sample) + [1] * len(cls_1_sample) + [2] * len(cls_2_sample) + [3] * len(
+            cls_3_sample) + [4] * len(cls_4_sample) + [5] * len(cls_5_sample)
+        file_paths = list(cls_0_sample) + list(cls_1_sample) + list(cls_2_sample) + list(cls_3_sample) + list(
+            cls_4_sample) + list(cls_5_sample)
+
+        df = pd.DataFrame({'file_path': file_paths, 'class': labels})
+        df.to_csv(img_sampled_path, index=False)
+
+def get_from_gen_done(gen_done_path):
+    if not os.path.exists(gen_done_path):
+        return None
+
+    frames = [f'{i}.jpg' for i in range(5, 16)]
+    video_frames = []
+    for frame in frames:
+        frame_path = os.path.join(gen_done_path, frame)
+        image = Image.open(frame_path).convert("RGB")
+        video_frames.append(image)
+    return video_frames
+
+
+def load_videos_from_folder(dir_path, label=None):
     videos = []
 
     for slide in os.listdir(dir_path):
         if not os.path.isdir(os.path.join(dir_path, slide)):
             continue
         slide_path = os.path.join(dir_path, slide)
-
-        for patch in os.listdir(slide_path):
-            patch_path = os.path.join(slide_path, patch)
-            frames = sorted(os.listdir(patch_path))
-            frame_paths = [os.path.join(patch_path, frame) for frame in frames]
-            frame_np = [np.array(Image.open(frame_path).convert('RGB')) for frame_path in frame_paths]
-            videos.append(np.stack(frame_np))
+        for sub_slide in os.listdir(slide_path):
+            sub_slide_path = os.path.join(slide_path, sub_slide)
+            for patch in os.listdir(sub_slide_path):
+                cls = patch.split('_')[-1]
+                if label is not None and str(label) != cls:
+                    continue
+                patch_path = os.path.join(sub_slide_path, patch)
+                frames = sorted(os.listdir(patch_path))
+                frame_paths = [os.path.join(patch_path, frame) for frame in frames]
+                frame_np = [np.array(Image.open(frame_path).convert('RGB')) for frame_path in frame_paths]
+                videos.append(np.stack(frame_np))
 
     return np.stack(videos)
 
@@ -151,7 +216,7 @@ def from_number_to_layer(layer_number):
     """
     return str(layer_number).zfill(2)
 
-def export_to_gif(frames, output_gif_path, fps):
+def export_to_gif(frames, output_gif_path, duration):
     """
     Export a list of frames to a GIF.
 
@@ -169,5 +234,5 @@ def export_to_gif(frames, output_gif_path, fps):
                        format='GIF',
                        append_images=pil_frames[1:],
                        save_all=True,
-                       duration=500,
+                       duration=duration,
                        loop=0)
